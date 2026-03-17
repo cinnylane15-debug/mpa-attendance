@@ -25,10 +25,91 @@ fi
 MGMT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$MGMT_DIR"
 
+# --- DNS / Network Pre-check ---
+echo -e "${YELLOW}[0/7] Checking network connectivity...${NC}"
+if ! getent hosts archive.ubuntu.com > /dev/null 2>&1; then
+    echo -e "${RED}  ✗ DNS resolution failed — cannot resolve archive.ubuntu.com${NC}"
+    echo ""
+    echo -e "  Your server cannot resolve domain names. Checking DNS config..."
+    echo ""
+
+    # Show current DNS config
+    echo -e "  Current /etc/resolv.conf:"
+    cat /etc/resolv.conf 2>/dev/null | grep -v "^#" | head -5 | sed 's/^/    /'
+    echo ""
+
+    # Try to auto-fix by adding Google DNS
+    echo -e "${YELLOW}  Attempting to fix DNS by adding Google nameservers...${NC}"
+
+    # Check if systemd-resolved is managing DNS
+    if systemctl is-active systemd-resolved > /dev/null 2>&1; then
+        # Add DNS to resolved config
+        mkdir -p /etc/systemd/resolved.conf.d
+        cat > /etc/systemd/resolved.conf.d/dns.conf <<DNSEOF
+[Resolve]
+DNS=8.8.8.8 8.8.4.4 1.1.1.1
+FallbackDNS=208.67.222.222
+DNSEOF
+        systemctl restart systemd-resolved
+        sleep 2
+    else
+        # Direct resolv.conf edit
+        if [ ! -L /etc/resolv.conf ]; then
+            cp /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
+            cat > /etc/resolv.conf <<DNSEOF
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+nameserver 1.1.1.1
+DNSEOF
+        else
+            # resolv.conf is a symlink (likely managed by systemd/netplan)
+            echo "nameserver 8.8.8.8" >> /etc/resolv.conf 2>/dev/null || true
+        fi
+    fi
+
+    # Re-check DNS
+    if getent hosts archive.ubuntu.com > /dev/null 2>&1; then
+        echo -e "${GREEN}  ✓ DNS fixed! Continuing...${NC}"
+    else
+        echo -e "${RED}  ✗ DNS still not working. Please fix manually:${NC}"
+        echo ""
+        echo -e "  Option 1: Edit /etc/resolv.conf and add:"
+        echo -e "    nameserver 8.8.8.8"
+        echo -e "    nameserver 8.8.4.4"
+        echo ""
+        echo -e "  Option 2: If using Netplan, edit /etc/netplan/*.yaml and add:"
+        echo -e "    nameservers:"
+        echo -e "      addresses: [8.8.8.8, 8.8.4.4]"
+        echo -e "    Then run: sudo netplan apply"
+        echo ""
+        echo -e "  Option 3: Check your network cable / DHCP server"
+        echo ""
+
+        # Check if deps are already installed — can continue offline
+        if command -v python3 &>/dev/null && command -v openssl &>/dev/null && python3 -c "import venv" 2>/dev/null; then
+            echo -e "${YELLOW}  python3, venv, and openssl are already installed.${NC}"
+            echo -e "${YELLOW}  Continuing without apt (offline mode)...${NC}"
+            SKIP_APT=1
+        else
+            echo -e "${RED}  Cannot continue — python3/openssl not installed and apt unavailable.${NC}"
+            echo -e "${RED}  Fix DNS first, then re-run this script.${NC}"
+            exit 1
+        fi
+    fi
+else
+    echo -e "${GREEN}  ✓ DNS resolution working${NC}"
+fi
+
 echo -e "${YELLOW}[1/7] Installing system dependencies...${NC}"
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv openssl > /dev/null 2>&1
-echo -e "${GREEN}  ✓ System dependencies installed${NC}"
+if [ "${SKIP_APT:-0}" = "1" ]; then
+    echo -e "${GREEN}  ✓ Dependencies already installed (offline mode)${NC}"
+elif command -v python3 &>/dev/null && command -v openssl &>/dev/null && python3 -c "import venv" 2>/dev/null; then
+    echo -e "${GREEN}  ✓ Dependencies already installed, skipping apt${NC}"
+else
+    apt-get update -qq
+    apt-get install -y -qq python3 python3-pip python3-venv openssl > /dev/null 2>&1
+    echo -e "${GREEN}  ✓ System dependencies installed${NC}"
+fi
 
 echo -e "${YELLOW}[2/7] Creating Python virtual environment...${NC}"
 python3 -m venv venv

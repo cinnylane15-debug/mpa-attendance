@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from auth import get_current_user
 from database import log_audit
 from models import ContainerInfo, ImageInfo, ImagePullRequest, MessageResponse
-from utils.shell import run_command
+from utils.shell import check_internet, run_command
 
 router = APIRouter(prefix="/docker", tags=["Docker Management"])
 
@@ -27,6 +27,10 @@ async def docker_status(user: dict = Depends(get_current_user)):
 
 @router.post("/install", response_model=MessageResponse)
 async def install_docker(user: dict = Depends(get_current_user)):
+    ok, msg = await check_internet()
+    if not ok:
+        return MessageResponse(message=f"Cannot install Docker: {msg}", success=False)
+
     # Install Docker using the official convenience script
     commands = [
         "apt-get update",

@@ -3,13 +3,16 @@ from fastapi import APIRouter, Depends, Query
 from auth import get_current_user
 from database import log_audit
 from models import InstalledPackage, MessageResponse, PackageAction
-from utils.shell import run_command, run_command_list
+from utils.shell import check_internet, run_command, run_command_list
 
 router = APIRouter(prefix="/packages", tags=["Package Management"])
 
 
 @router.post("/update", response_model=MessageResponse)
 async def apt_update(user: dict = Depends(get_current_user)):
+    ok, msg = await check_internet()
+    if not ok:
+        return MessageResponse(message=msg, success=False)
     result = await run_command("DEBIAN_FRONTEND=noninteractive apt-get update", timeout=300)
     await log_audit("packages.update", user["id"], result.output, success=result.success)
     if not result.success:
@@ -23,6 +26,10 @@ async def install_packages(req: PackageAction, user: dict = Depends(get_current_
     for pkg in req.packages:
         if not all(c.isalnum() or c in "-.:+" for c in pkg):
             return MessageResponse(message=f"Invalid package name: {pkg}", success=False)
+
+    ok, msg = await check_internet()
+    if not ok:
+        return MessageResponse(message=msg, success=False)
 
     packages_str = " ".join(req.packages)
     cmd = f"DEBIAN_FRONTEND=noninteractive apt-get install -y {packages_str}"
