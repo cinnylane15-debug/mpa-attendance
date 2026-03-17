@@ -17,6 +17,7 @@ from app.schemas import (
     FaceCheckInResponse,
     CheckOutRequest,
     CheckOutResponse,
+    LiveDetection,
 )
 from app.auth import get_current_user
 
@@ -235,6 +236,29 @@ def list_attendance_records(
         .all()
     )
     return [_record_to_out(r) for r in records]
+
+
+@router.get("/live", response_model=List[LiveDetection])
+def live_detections(
+    minutes: int = Query(5, ge=1, le=60),
+    _current_user=Depends(get_current_user),
+):
+    """Return recent RTSP auto-detections from the last N minutes."""
+    from app.rtsp_worker import get_recent_detections
+
+    detections = get_recent_detections(minutes=minutes)
+    return [
+        LiveDetection(
+            employee_name=d["employee_name"],
+            employee_id=d["employee_id"],
+            camera_name=d["camera_name"],
+            camera_location=d["camera_location"],
+            direction=d["direction"],
+            confidence=d["confidence"],
+            detected_at=d["detected_at"],
+        )
+        for d in detections
+    ]
 
 
 @router.get("/today", response_model=List[AttendanceRecordOut])

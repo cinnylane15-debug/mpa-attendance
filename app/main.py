@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import auth_router, employees, attendance, dashboard
+from app.routers import auth_router, employees, attendance, dashboard, cameras
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -27,6 +27,7 @@ app.include_router(auth_router.router)
 app.include_router(employees.router)
 app.include_router(attendance.router)
 app.include_router(dashboard.router)
+app.include_router(cameras.router)
 
 # Redis client stored on app state
 redis_client = None
@@ -52,10 +53,24 @@ def on_startup():
     except redis.ConnectionError:
         print("Warning: Redis connection failed. Continuing without cache.")
 
+    # Start RTSP camera workers for all active cameras
+    from app.rtsp_worker import start_all_active_cameras
+    try:
+        start_all_active_cameras()
+        print("RTSP camera workers started")
+    except Exception as exc:
+        print(f"Warning: Failed to start RTSP workers: {exc}")
+
 
 @app.on_event("shutdown")
 def on_shutdown():
     global redis_client
+
+    # Stop all RTSP workers
+    from app.rtsp_worker import stop_all_workers
+    stop_all_workers()
+    print("RTSP camera workers stopped")
+
     if redis_client:
         redis_client.close()
 
