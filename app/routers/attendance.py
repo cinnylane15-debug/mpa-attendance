@@ -1,253 +1,223 @@
-import json
-import os
-import uuid
-import datetime
-from typing import List, Optional
+import io
+import tempfile
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
-import face_recognition
-import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import Employee, AttendanceRecord, AttendanceStatus, CheckMethod
-from app.schemas import (
-    AttendanceRecordOut,
-    FaceCheckInResponse,
-    CheckOutRequest,
-    CheckOutResponse,
+from app.models import (
+    AttendanceRecord, AttendanceStatus, AttendanceMethod, Student, Class,
 )
-from app.auth import get_current_user
+from app.rtsp_worker import rtsp_manager
+from app.schemas import (
+    AttendanceResponse, ManualCheckIn, ManualCheckOut, ExcelExportRequest,
+)
+from app.models import User
 
 router = APIRouter(prefix="/api/attendance", tags=["Attendance"])
 
 
-def _record_to_out(record: AttendanceRecord) -> AttendanceRecordOut:
-    return AttendanceRecordOut(
+def _record_to_response(record: AttendanceRecord) -> AttendanceResponse:
+    student = record.student
+    return AttendanceResponse(
         id=record.id,
-        employee_id=record.employee_id,
-        employee_name=record.employee.name if record.employee else None,
+        student_id=record.student_id,
+        student_name=student.name if student else None,
+        student_code=student.student_id if student else None,
+        class_name=student.student_class.name if student and student.student_class else None,
         check_in=record.check_in,
         check_out=record.check_out,
         date=record.date,
-        status=record.status,
-        method=record.method,
+        status=record.status.value,
+        method=record.method.value,
         confidence=record.confidence,
+        camera_name=record.camera_name,
         created_at=record.created_at,
     )
 
 
-@router.post("/check-in", response_model=FaceCheckInResponse)
-def face_check_in(
-    file: UploadFile = File(...),
+@router.get("/today", response_model=list[AttendanceResponse])
+def get_today_attendance(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Check in via face recognition. Upload a photo and the system identifies the employee."""
-    allowed = {"image/jpeg", "image/png", "image/jpg"}
-    if file.content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Only JPEG/PNG images are accepted")
-
-    contents = file.read()
-
-    # Save temporarily
-    tmp_filename = f"checkin_{uuid.uuid4().hex[:12]}.jpg"
-    tmp_path = os.path.join(settings.UPLOAD_DIR, tmp_filename)
-    with open(tmp_path, "wb") as f:
-        f.write(contents)
-
-    try:
-        # Detect faces in uploaded image
-        image = face_recognition.load_image_file(tmp_path)
-        unknown_encodings = face_recognition.face_encodings(image)
-
-        if len(unknown_encodings) == 0:
-            return FaceCheckInResponse(success=False, message="No face detected in the image")
-
-        unknown_encoding = unknown_encodings[0]
-
-        # Load all active employees with face encodings
-        employees = (
-            db.query(Employee)
-            .filter(Employee.is_active == True, Employee.face_encoding.isnot(None))
-            .all()
-        )
-
-        if not employees:
-            return FaceCheckInResponse(
-                success=False, message="No registered employees with face encodings found"
-            )
-
-        known_encodings = []
-        known_employees = []
-        for emp in employees:
-            enc = np.array(json.loads(emp.face_encoding))
-            known_encodings.append(enc)
-            known_employees.append(emp)
-
-        # Compare faces
-        distances = face_recognition.face_distance(known_encodings, unknown_encoding)
-        best_idx = int(np.argmin(distances))
-        best_distance = float(distances[best_idx])
-        confidence = round(1.0 - best_distance, 4)
-
-        if best_distance > settings.FACE_RECOGNITION_TOLERANCE:
-            return FaceCheckInResponse(
-                success=False,
-                message="Face not recognized. No matching employee found.",
-                confidence=confidence,
-            )
-
-        matched_employee = known_employees[best_idx]
-        today = datetime.date.today()
-
-        # Check if already checked in today
-        existing = (
-            db.query(AttendanceRecord)
-            .filter(
-                AttendanceRecord.employee_id == matched_employee.id,
-                AttendanceRecord.date == today,
-            )
-            .first()
-        )
-        if existing:
-            return FaceCheckInResponse(
-                success=False,
-                message=f"{matched_employee.name} has already checked in today",
-                employee_name=matched_employee.name,
-                employee_id=matched_employee.employee_id,
-                confidence=confidence,
-            )
-
-        # Determine status based on check-in time (late if after 09:00)
-        now = datetime.datetime.utcnow()
-        status_val = AttendanceStatus.present
-        if now.hour >= 9:
-            status_val = AttendanceStatus.late
-
-        record = AttendanceRecord(
-            employee_id=matched_employee.id,
-            check_in=now,
-            date=today,
-            status=status_val,
-            method=CheckMethod.face_recognition,
-            confidence=confidence,
-        )
-        db.add(record)
-        db.commit()
-        db.refresh(record)
-
-        return FaceCheckInResponse(
-            success=True,
-            message=f"Check-in successful for {matched_employee.name}",
-            employee_name=matched_employee.name,
-            employee_id=matched_employee.employee_id,
-            confidence=confidence,
-            attendance_id=record.id,
-        )
-    finally:
-        # Clean up temp file
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-
-@router.post("/check-out", response_model=CheckOutResponse)
-def check_out(
-    payload: CheckOutRequest,
-    db: Session = Depends(get_db),
-):
-    """Check out an employee by their employee_id."""
-    emp = db.query(Employee).filter(Employee.employee_id == payload.employee_id).first()
-    if not emp:
-        raise HTTPException(status_code=404, detail="Employee not found")
-
-    today = datetime.date.today()
-    record = (
-        db.query(AttendanceRecord)
-        .filter(
-            AttendanceRecord.employee_id == emp.id,
-            AttendanceRecord.date == today,
-        )
-        .first()
-    )
-
-    if not record:
-        return CheckOutResponse(
-            success=False,
-            message=f"{emp.name} has not checked in today",
-            employee_name=emp.name,
-        )
-    if record.check_out is not None:
-        return CheckOutResponse(
-            success=False,
-            message=f"{emp.name} has already checked out today",
-            employee_name=emp.name,
-            check_out=record.check_out,
-        )
-
-    now = datetime.datetime.utcnow()
-    record.check_out = now
-
-    # Mark half-day if worked less than 4 hours
-    if record.check_in:
-        duration = (now - record.check_in).total_seconds() / 3600
-        if duration < 4:
-            record.status = AttendanceStatus.half_day
-
-    db.commit()
-    db.refresh(record)
-
-    return CheckOutResponse(
-        success=True,
-        message=f"Check-out successful for {emp.name}",
-        employee_name=emp.name,
-        check_out=record.check_out,
-    )
-
-
-@router.get("/records", response_model=List[AttendanceRecordOut])
-def list_attendance_records(
-    start_date: Optional[datetime.date] = Query(None),
-    end_date: Optional[datetime.date] = Query(None),
-    employee_id: Optional[str] = Query(None),
-    department: Optional[str] = Query(None),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
-):
-    """Get attendance records with optional filters."""
-    query = db.query(AttendanceRecord).join(Employee)
-
-    if start_date:
-        query = query.filter(AttendanceRecord.date >= start_date)
-    if end_date:
-        query = query.filter(AttendanceRecord.date <= end_date)
-    if employee_id:
-        query = query.filter(Employee.employee_id == employee_id)
-    if department:
-        query = query.filter(Employee.department == department)
-
-    records = (
-        query.order_by(AttendanceRecord.date.desc(), AttendanceRecord.check_in.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-    return [_record_to_out(r) for r in records]
-
-
-@router.get("/today", response_model=List[AttendanceRecordOut])
-def today_attendance(
-    db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
-):
-    """Get all attendance records for today."""
-    today = datetime.date.today()
+    """Get today's attendance records with student names."""
+    today = date.today()
     records = (
         db.query(AttendanceRecord)
         .filter(AttendanceRecord.date == today)
         .order_by(AttendanceRecord.check_in.desc())
         .all()
     )
-    return [_record_to_out(r) for r in records]
+    return [_record_to_response(r) for r in records]
+
+
+@router.get("/records", response_model=list[AttendanceResponse])
+def get_records(
+    record_date: Optional[date] = Query(None, alias="date"),
+    class_id: Optional[int] = Query(None),
+    student_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get filtered attendance records."""
+    query = db.query(AttendanceRecord)
+
+    if record_date:
+        query = query.filter(AttendanceRecord.date == record_date)
+    if student_id:
+        query = query.filter(AttendanceRecord.student_id == student_id)
+    if class_id:
+        query = query.join(Student).filter(Student.class_id == class_id)
+
+    records = query.order_by(AttendanceRecord.date.desc(), AttendanceRecord.check_in.desc()).all()
+    return [_record_to_response(r) for r in records]
+
+
+@router.post("/check-in", response_model=AttendanceResponse, status_code=status.HTTP_201_CREATED)
+def manual_check_in(
+    data: ManualCheckIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manual check-in by student_id code."""
+    student = db.query(Student).filter(Student.student_id == data.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    today = date.today()
+    existing = (
+        db.query(AttendanceRecord)
+        .filter(AttendanceRecord.student_id == student.id, AttendanceRecord.date == today)
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Student already checked in today")
+
+    now = datetime.now(timezone.utc)
+    school_start = datetime.strptime(settings.SCHOOL_START_TIME, "%H:%M").time()
+    late_threshold = (
+        datetime.combine(today, school_start) + timedelta(minutes=settings.LATE_THRESHOLD_MINUTES)
+    ).time()
+    att_status = AttendanceStatus.late if now.time() > late_threshold else AttendanceStatus.present
+
+    record = AttendanceRecord(
+        student_id=student.id,
+        check_in=now,
+        date=today,
+        status=att_status,
+        method=AttendanceMethod.manual,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return _record_to_response(record)
+
+
+@router.post("/check-out", response_model=AttendanceResponse)
+def manual_check_out(
+    data: ManualCheckOut,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manual check-out by student_id code."""
+    student = db.query(Student).filter(Student.student_id == data.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    today = date.today()
+    record = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.student_id == student.id,
+            AttendanceRecord.date == today,
+            AttendanceRecord.check_out.is_(None),
+        )
+        .order_by(AttendanceRecord.created_at.desc())
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=400, detail="No open check-in found for today")
+
+    record.check_out = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return _record_to_response(record)
+
+
+@router.get("/live")
+def get_live_detections(current_user: User = Depends(get_current_user)):
+    """Get recent RTSP face detections from the last 5 minutes."""
+    detections = rtsp_manager.get_recent_detections(minutes=5)
+    return detections
+
+
+@router.post("/export")
+def export_attendance(
+    data: ExcelExportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export attendance records to Excel file."""
+    query = (
+        db.query(AttendanceRecord)
+        .join(Student)
+        .filter(
+            AttendanceRecord.date >= data.start_date,
+            AttendanceRecord.date <= data.end_date,
+        )
+    )
+    if data.class_id:
+        query = query.filter(Student.class_id == data.class_id)
+
+    records = query.order_by(AttendanceRecord.date, Student.student_id).all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attendance Report"
+
+    # Header row
+    headers = ["Student ID", "Name", "Class", "Date", "Check In", "Check Out", "Status", "Method"]
+    ws.append(headers)
+
+    # Style header
+    from openpyxl.styles import Font
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    # Data rows
+    for record in records:
+        student = record.student
+        ws.append([
+            student.student_id if student else "",
+            student.name if student else "",
+            student.student_class.name if student and student.student_class else "",
+            record.date.isoformat(),
+            record.check_in.strftime("%H:%M:%S") if record.check_in else "",
+            record.check_out.strftime("%H:%M:%S") if record.check_out else "",
+            record.status.value,
+            record.method.value,
+        ])
+
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_length = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_length + 2, 30)
+
+    # Write to bytes buffer
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"attendance_{data.start_date}_{data.end_date}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

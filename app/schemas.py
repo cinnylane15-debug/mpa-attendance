@@ -1,17 +1,15 @@
-import datetime
-from typing import Optional, List
-from pydantic import BaseModel, Field
-
-from app.models import UserRole, AttendanceStatus, CheckMethod
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+from datetime import date, time, datetime
 
 
-# -- Auth / User ---------------------------------------------------------------
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 class UserCreate(BaseModel):
-    username: str = Field(..., min_length=3, max_length=100)
-    email: str = Field(..., max_length=255)
-    password: str = Field(..., min_length=6)
-    role: UserRole = UserRole.viewer
+    username: str
+    email: str
+    password: str
+    role: str = "teacher"
 
 
 class UserLogin(BaseModel):
@@ -19,15 +17,14 @@ class UserLogin(BaseModel):
     password: str
 
 
-class UserOut(BaseModel):
+class UserResponse(BaseModel):
     id: int
     username: str
     email: str
-    role: UserRole
-    created_at: datetime.datetime
+    role: str
+    created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class Token(BaseModel):
@@ -35,90 +32,217 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-class TokenData(BaseModel):
-    user_id: Optional[int] = None
-    username: Optional[str] = None
+# ── Class ─────────────────────────────────────────────────────────────────────
+
+class ClassCreate(BaseModel):
+    name: str
+    section: Optional[str] = None
+    grade: Optional[str] = None
+    teacher_id: Optional[int] = None
 
 
-# -- Employee ------------------------------------------------------------------
+class ClassUpdate(BaseModel):
+    name: Optional[str] = None
+    section: Optional[str] = None
+    grade: Optional[str] = None
+    teacher_id: Optional[int] = None
 
-class EmployeeCreate(BaseModel):
-    employee_id: str = Field(..., max_length=50)
-    name: str = Field(..., max_length=200)
-    department: Optional[str] = Field(None, max_length=100)
+
+class ClassResponse(BaseModel):
+    id: int
+    name: str
+    section: Optional[str] = None
+    grade: Optional[str] = None
+    teacher_id: Optional[int] = None
+    student_count: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
 
 
-class EmployeeUpdate(BaseModel):
-    name: Optional[str] = Field(None, max_length=200)
-    department: Optional[str] = Field(None, max_length=100)
+# ── Student ───────────────────────────────────────────────────────────────────
+
+class StudentCreate(BaseModel):
+    student_id: str
+    name: str
+    class_id: Optional[int] = None
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
+
+
+class StudentUpdate(BaseModel):
+    name: Optional[str] = None
+    class_id: Optional[int] = None
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
     is_active: Optional[bool] = None
 
 
-class EmployeeOut(BaseModel):
+class StudentResponse(BaseModel):
     id: int
-    employee_id: str
+    student_id: str
     name: str
-    department: Optional[str]
-    photo_path: Optional[str]
-    is_active: bool
-    has_face_encoding: bool = False
-    created_at: datetime.datetime
+    class_id: Optional[int] = None
+    class_name: Optional[str] = None
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
+    photo_path: Optional[str] = None
+    has_face_embedding: bool = False
+    is_active: bool = True
+    created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
-# -- Attendance ----------------------------------------------------------------
+# ── Attendance ────────────────────────────────────────────────────────────────
 
-class AttendanceRecordOut(BaseModel):
+class ManualCheckIn(BaseModel):
+    student_id: str  # The student's student_id field
+
+
+class ManualCheckOut(BaseModel):
+    student_id: str
+
+
+class AttendanceResponse(BaseModel):
     id: int
-    employee_id: int
-    employee_name: Optional[str] = None
-    check_in: Optional[datetime.datetime]
-    check_out: Optional[datetime.datetime]
-    date: datetime.date
-    status: AttendanceStatus
-    method: CheckMethod
-    confidence: Optional[float]
-    created_at: datetime.datetime
-
-    class Config:
-        from_attributes = True
-
-
-class FaceCheckInResponse(BaseModel):
-    success: bool
-    message: str
-    employee_name: Optional[str] = None
-    employee_id: Optional[str] = None
+    student_id: int
+    student_name: Optional[str] = None
+    student_code: Optional[str] = None
+    class_name: Optional[str] = None
+    check_in: Optional[datetime] = None
+    check_out: Optional[datetime] = None
+    date: date
+    status: str
+    method: str
     confidence: Optional[float] = None
-    attendance_id: Optional[int] = None
+    camera_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
 
 
-class CheckOutRequest(BaseModel):
-    employee_id: str
+class LiveDetection(BaseModel):
+    student_name: str
+    student_id: str
+    camera_name: str
+    confidence: float
+    timestamp: datetime
 
 
-class CheckOutResponse(BaseModel):
-    success: bool
-    message: str
-    employee_name: Optional[str] = None
-    check_out: Optional[datetime.datetime] = None
+# ── Camera ────────────────────────────────────────────────────────────────────
+
+class CameraCreate(BaseModel):
+    name: str
+    location: Optional[str] = None
+    rtsp_url: str
+    is_active: bool = True
+    direction: str = "entry"
 
 
-class AttendanceReportQuery(BaseModel):
-    start_date: Optional[datetime.date] = None
-    end_date: Optional[datetime.date] = None
-    employee_id: Optional[str] = None
-    department: Optional[str] = None
+class CameraUpdate(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    rtsp_url: Optional[str] = None
+    is_active: Optional[bool] = None
+    direction: Optional[str] = None
 
 
-# -- Dashboard -----------------------------------------------------------------
+class CameraResponse(BaseModel):
+    id: int
+    name: str
+    location: Optional[str] = None
+    rtsp_url: str
+    is_active: bool
+    direction: str
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Schedule ──────────────────────────────────────────────────────────────────
+
+class ScheduleCreate(BaseModel):
+    class_id: int
+    day_of_week: int
+    start_time: time
+    end_time: time
+    is_active: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    day_of_week: Optional[int] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    is_active: Optional[bool] = None
+
+
+class ScheduleResponse(BaseModel):
+    id: int
+    class_id: int
+    class_name: Optional[str] = None
+    day_of_week: int
+    start_time: time
+    end_time: time
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+# ── Holiday ───────────────────────────────────────────────────────────────────
+
+class HolidayCreate(BaseModel):
+    name: str
+    date: date
+    description: Optional[str] = None
+
+
+class HolidayUpdate(BaseModel):
+    name: Optional[str] = None
+    date: Optional[date] = None
+    description: Optional[str] = None
+
+
+class HolidayResponse(BaseModel):
+    id: int
+    name: str
+    date: date
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 class DashboardStats(BaseModel):
-    total_employees: int
-    active_employees: int
-    today_present: int
-    today_absent: int
-    today_late: int
-    recent_activity: List[AttendanceRecordOut]
+    total_students: int
+    present_today: int
+    absent_today: int
+    late_today: int
+    attendance_rate: float
+
+
+class WeeklySummary(BaseModel):
+    date: date
+    present: int
+    absent: int
+    late: int
+
+
+class ClassStats(BaseModel):
+    class_id: int
+    class_name: str
+    total_students: int
+    present_today: int
+    absent_today: int
+    late_today: int
+    attendance_rate: float
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+class ExcelExportRequest(BaseModel):
+    start_date: date
+    end_date: date
+    class_id: Optional[int] = None

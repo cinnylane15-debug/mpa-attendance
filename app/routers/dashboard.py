@@ -1,66 +1,124 @@
-import datetime
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.database import get_db
-from app.models import Employee, AttendanceRecord
-from app.schemas import DashboardStats, AttendanceRecordOut
 from app.auth import get_current_user
+from app.database import get_db
+from app.models import Student, AttendanceRecord, AttendanceStatus, Class, User
+from app.schemas import DashboardStats, WeeklySummary, ClassStats
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
 
 @router.get("/stats", response_model=DashboardStats)
-def dashboard_stats(
+def get_dashboard_stats(
     db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    """Get dashboard statistics: totals, today's attendance, recent activity."""
-    today = datetime.date.today()
+    """Get overall attendance statistics for today."""
+    today = date.today()
 
-    total_employees = db.query(Employee).count()
-    active_employees = db.query(Employee).filter(Employee.is_active == True).count()
+    total_students = db.query(Student).filter(Student.is_active == True).count()
 
-    today_records = (
+    present_today = (
         db.query(AttendanceRecord)
-        .filter(AttendanceRecord.date == today)
-        .all()
+        .filter(AttendanceRecord.date == today, AttendanceRecord.status == AttendanceStatus.present)
+        .count()
+    )
+    late_today = (
+        db.query(AttendanceRecord)
+        .filter(AttendanceRecord.date == today, AttendanceRecord.status == AttendanceStatus.late)
+        .count()
     )
 
-    today_present = sum(1 for r in today_records if r.status in ("present", "late", "half_day"))
-    today_late = sum(1 for r in today_records if r.status == "late")
-    today_absent = active_employees - today_present
-
-    # Recent activity: last 10 attendance records
-    recent = (
-        db.query(AttendanceRecord)
-        .order_by(AttendanceRecord.created_at.desc())
-        .limit(10)
-        .all()
-    )
-
-    recent_out = []
-    for r in recent:
-        recent_out.append(
-            AttendanceRecordOut(
-                id=r.id,
-                employee_id=r.employee_id,
-                employee_name=r.employee.name if r.employee else None,
-                check_in=r.check_in,
-                check_out=r.check_out,
-                date=r.date,
-                status=r.status,
-                method=r.method,
-                confidence=r.confidence,
-                created_at=r.created_at,
-            )
-        )
+    checked_in_today = present_today + late_today
+    absent_today = max(0, total_students - checked_in_today)
+    attendance_rate = (checked_in_today / total_students * 100) if total_students > 0 else 0.0
 
     return DashboardStats(
-        total_employees=total_employees,
-        active_employees=active_employees,
-        today_present=today_present,
-        today_absent=max(today_absent, 0),
-        today_late=today_late,
-        recent_activity=recent_out,
+        total_students=total_students,
+        present_today=present_today,
+        absent_today=absent_today,
+        late_today=late_today,
+        attendance_rate=round(attendance_rate, 1),
     )
+
+
+@router.get("/weekly", response_model=list[WeeklySummary])
+def get_weekly_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get attendance summary for the last 7 days."""
+    today = date.today()
+    total_students = db.query(Student).filter(Student.is_active == True).count()
+    results = []
+
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+
+        present = (
+            db.query(AttendanceRecord)
+            .filter(AttendanceRecord.date == day, AttendanceRecord.status == AttendanceStatus.present)
+            .count()
+        )
+        late = (
+            db.query(AttendanceRecord)
+            .filter(AttendanceRecord.date == day, AttendanceRecord.status == AttendanceStatus.late)
+            .count()
+        )
+        absent = max(0, total_students - present - late)
+
+        results.append(WeeklySummary(date=day, present=present, absent=absent, late=late))
+
+    return results
+
+
+@router.get("/class-stats", response_model=list[ClassStats])
+def get_class_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get per-class attendance breakdown for today."""
+    today = date.today()
+    classes = db.query(Class).order_by(Class.name).all()
+    results = []
+
+    for cls in classes:
+        total = db.query(Student).filter(Student.class_id == cls.id, Student.is_active == True).count()
+
+        present = (
+            db.query(AttendanceRecord)
+            .join(Student)
+            .filter(
+                Student.class_id == cls.id,
+                AttendanceRecord.date == today,
+                AttendanceRecord.status == AttendanceStatus.present,
+            )
+            .count()
+        )
+        late = (
+            db.query(AttendanceRecord)
+            .join(Student)
+            .filter(
+                Student.class_id == cls.id,
+                AttendanceRecord.date == today,
+                AttendanceRecord.status == AttendanceStatus.late,
+            )
+            .count()
+        )
+        absent = max(0, total - present - late)
+        rate = ((present + late) / total * 100) if total > 0 else 0.0
+
+        results.append(ClassStats(
+            class_id=cls.id,
+            class_name=cls.name,
+            total_students=total,
+            present_today=present,
+            absent_today=absent,
+            late_today=late,
+            attendance_rate=round(rate, 1),
+        ))
+
+    return results
