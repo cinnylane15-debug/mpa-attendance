@@ -11,6 +11,9 @@ venv/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 
 # Deployment stacks (runtime data)
 stacks/
