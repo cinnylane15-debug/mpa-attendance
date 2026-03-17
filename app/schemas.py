@@ -2,7 +2,7 @@ import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
-from app.models import UserRole, AttendanceStatus, CheckMethod
+from app.models import UserRole, AttendanceStatus, CheckMethod, CameraDirection
 
 
 # -- Auth / User ---------------------------------------------------------------
@@ -111,6 +111,56 @@ class AttendanceReportQuery(BaseModel):
     end_date: Optional[datetime.date] = None
     employee_id: Optional[str] = None
     department: Optional[str] = None
+
+
+# -- Camera --------------------------------------------------------------------
+
+class CameraCreate(BaseModel):
+    name: str = Field(..., max_length=200)
+    location: Optional[str] = Field(None, max_length=200)
+    rtsp_url: str = Field(..., max_length=500)
+    direction: CameraDirection = CameraDirection.entry
+
+
+class CameraUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    location: Optional[str] = Field(None, max_length=200)
+    rtsp_url: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = None
+    direction: Optional[CameraDirection] = None
+
+
+class CameraResponse(BaseModel):
+    id: int
+    name: str
+    location: Optional[str]
+    rtsp_url: str
+    is_active: bool
+    direction: CameraDirection
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CameraStatusResponse(BaseModel):
+    id: int
+    name: str
+    location: Optional[str]
+    direction: CameraDirection
+    is_active: bool
+    is_processing: bool
+    last_frame_at: Optional[datetime.datetime] = None
+
+
+class LiveDetection(BaseModel):
+    employee_name: str
+    employee_id: str
+    camera_name: str
+    camera_location: Optional[str]
+    direction: CameraDirection
+    confidence: float
+    detected_at: datetime.datetime
 
 
 # -- Dashboard -----------------------------------------------------------------

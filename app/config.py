@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # File uploads
     UPLOAD_DIR: str = "/opt/mpa-app/uploads"
 
+    # RTSP / Camera
+    RTSP_FRAME_INTERVAL: float = 2.0  # seconds between frame captures
+    RTSP_COOLDOWN_MINUTES: int = 30  # duplicate check-in cooldown
+    RTSP_ENCODING_RELOAD_SECONDS: int = 60  # reload face encodings interval
+    RTSP_RECONNECT_DELAY: int = 5  # seconds before reconnect attempt
+
     # App
     APP_NAME: str = "MPA Face Recognition Attendance System"
     DEBUG: bool = False

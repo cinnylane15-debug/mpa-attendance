@@ -25,6 +25,12 @@ class AttendanceStatus(str, enum.Enum):
 class CheckMethod(str, enum.Enum):
     face_recognition = "face_recognition"
     manual = "manual"
+    rtsp_auto = "rtsp_auto"
+
+
+class CameraDirection(str, enum.Enum):
+    entry = "entry"
+    exit = "exit"
 
 
 class User(Base):
@@ -67,3 +73,17 @@ class AttendanceRecord(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     employee = relationship("Employee", back_populates="attendance_records")
+
+
+class Camera(Base):
+    __tablename__ = "cameras"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    location = Column(String(200), nullable=True)
+    rtsp_url = Column(String(500), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    direction = Column(
+        SAEnum(CameraDirection), default=CameraDirection.entry, nullable=False
+    )
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
