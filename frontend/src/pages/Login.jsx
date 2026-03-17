@@ -1,92 +1,76 @@
-import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import React, { useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Form, Input, Button, Card, message, Typography } from 'antd';
+import { UserOutlined, LockOutlined } from '@ant-design/icons';
+import { login, fetchCurrentUser } from '../api';
 import { useAuth } from '../context/AuthContext';
 
-function Login() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+const { Title, Text } = Typography;
+
+export default function Login() {
   const [loading, setLoading] = useState(false);
-  const { user, login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { loginUser } = useAuth();
 
-  if (user) {
-    return <Navigate to="/" replace />;
-  }
+  const from = location.state?.from?.pathname || '/';
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
+  const handleSubmit = async (values) => {
     setLoading(true);
     try {
-      await login(username, password);
-      navigate('/');
+      const data = await login(values.username, values.password);
+      const token = data.access_token;
+      localStorage.setItem('token', token);
+      const userData = await fetchCurrentUser();
+      loginUser(token, userData);
+      message.success('Login successful');
+      navigate(from, { replace: true });
     } catch (err) {
-      setError(err.message || 'Login failed');
+      message.error(err.message || 'Login failed');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-lg shadow-xl p-8">
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-gray-900">MPA Attendance</h1>
-            <p className="text-gray-500 text-sm mt-2">
-              Face Recognition Attendance System
-            </p>
-          </div>
-
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Username
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-colors"
-                placeholder="Enter your username"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-colors"
-                placeholder="Enter your password"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? 'Signing in...' : 'Sign In'}
-            </button>
-          </form>
+    <div className="login-container">
+      <Card className="login-card" bordered={false}>
+        <div className="login-logo">
+          <div style={{ fontSize: 48 }}>🏫</div>
+          <Title level={3} style={{ marginTop: 8, marginBottom: 4 }}>MPA Attendance</Title>
+          <Text type="secondary">School Attendance Management System</Text>
         </div>
-        <p className="text-center text-gray-500 text-xs mt-6">
-          MPA Face Recognition Attendance System
-        </p>
-      </div>
+        <Form
+          name="login"
+          onFinish={handleSubmit}
+          size="large"
+          autoComplete="off"
+        >
+          <Form.Item
+            name="username"
+            rules={[{ required: true, message: 'Please enter your username' }]}
+          >
+            <Input
+              prefix={<UserOutlined />}
+              placeholder="Username"
+            />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            rules={[{ required: true, message: 'Please enter your password' }]}
+          >
+            <Input.Password
+              prefix={<LockOutlined />}
+              placeholder="Password"
+            />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={loading} block>
+              Sign In
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
     </div>
   );
 }
-
-export default Login;

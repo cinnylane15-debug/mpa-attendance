@@ -1,256 +1,266 @@
-import { useState, useEffect, useCallback } from 'react';
-import { apiGet } from '../api';
+import React, { useState, useEffect } from 'react';
+import {
+  Table, Button, Select, Tag, DatePicker, Tabs, message, Space, Typography, Card,
+} from 'antd';
+import {
+  DownloadOutlined, SearchOutlined, ReloadOutlined,
+} from '@ant-design/icons';
+import { apiGet, apiGetBlob } from '../api';
+import { saveAs } from 'file-saver';
+import dayjs from 'dayjs';
 
-function formatTime(dateStr) {
-  if (!dateStr) return '--';
-  const d = new Date(dateStr);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
+const { Title } = Typography;
+const { Option } = Select;
+const { RangePicker } = DatePicker;
 
-function formatDate(dateStr) {
-  if (!dateStr) return '--';
-  return new Date(dateStr).toLocaleDateString();
-}
+const statusColors = { present: 'green', late: 'orange', absent: 'red' };
+const methodColors = { manual: 'blue', rtsp_auto: 'purple' };
 
-function Attendance() {
+export default function Attendance() {
   const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [viewMode, setViewMode] = useState('today'); // 'today' or 'history'
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [filterEmployeeId, setFilterEmployeeId] = useState('');
+  const [classes, setClasses] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(dayjs());
+  const [filterClass, setFilterClass] = useState(null);
+  const [activeTab, setActiveTab] = useState('today');
+  const [exportRange, setExportRange] = useState(null);
+  const [exportClassId, setExportClassId] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
-  const fetchToday = useCallback(async () => {
+  const fetchClasses = async () => {
     try {
-      setLoading(true);
-      const data = await apiGet('/attendance/today');
-      setRecords(data);
-      setError('');
-    } catch (err) {
-      setError('Failed to load attendance records');
-    } finally {
-      setLoading(false);
+      const data = await apiGet('/classes');
+      setClasses(Array.isArray(data) ? data : data?.items || []);
+    } catch {
+      // ignore
     }
-  }, []);
+  };
 
-  const fetchHistory = useCallback(async () => {
+  const fetchAttendance = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
       const params = new URLSearchParams();
-      if (startDate) params.set('start_date', startDate);
-      if (endDate) params.set('end_date', endDate);
-      if (filterEmployeeId) params.set('employee_id', filterEmployeeId);
-      params.set('limit', '100');
-      const query = params.toString();
-      const data = await apiGet(`/attendance/records?${query}`);
-      setRecords(data);
-      setError('');
+      if (activeTab === 'today') {
+        params.append('date', dayjs().format('YYYY-MM-DD'));
+      } else if (selectedDate) {
+        params.append('date', selectedDate.format('YYYY-MM-DD'));
+      }
+      if (filterClass) params.append('class_id', filterClass);
+      const data = await apiGet(`/attendance?${params.toString()}`);
+      setRecords(Array.isArray(data) ? data : data?.items || []);
     } catch (err) {
-      setError('Failed to load attendance records');
+      message.error('Failed to load attendance records');
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate, filterEmployeeId]);
+  };
 
   useEffect(() => {
-    if (viewMode === 'today') {
-      fetchToday();
-    } else {
-      fetchHistory();
+    fetchClasses();
+  }, []);
+
+  useEffect(() => {
+    fetchAttendance();
+  }, [activeTab, selectedDate, filterClass]);
+
+  const handleExport = async () => {
+    if (!exportRange || exportRange.length !== 2) {
+      message.warning('Please select a date range for export');
+      return;
     }
-  }, [viewMode, fetchToday, fetchHistory]);
-
-  const handleExportCSV = () => {
-    if (records.length === 0) return;
-    const headers = ['Employee', 'Date', 'Check In', 'Check Out', 'Status', 'Method', 'Confidence'];
-    const rows = records.map((r) => [
-      r.employee_name || `Employee #${r.employee_id}`,
-      r.date,
-      r.check_in ? new Date(r.check_in).toLocaleString() : '',
-      r.check_out ? new Date(r.check_out).toLocaleString() : '',
-      r.status,
-      r.method,
-      r.confidence != null ? r.confidence.toFixed(4) : '',
-    ]);
-    const csv = [headers, ...rows].map((row) => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `attendance_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('start_date', exportRange[0].format('YYYY-MM-DD'));
+      params.append('end_date', exportRange[1].format('YYYY-MM-DD'));
+      if (exportClassId) params.append('class_id', exportClassId);
+      const blob = await apiGetBlob(`/attendance/export?${params.toString()}`);
+      const filename = `attendance_${exportRange[0].format('YYYYMMDD')}_${exportRange[1].format('YYYYMMDD')}.xlsx`;
+      saveAs(blob, filename);
+      message.success('Export downloaded');
+    } catch (err) {
+      message.error(err.message || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const statusBadge = (status) => {
-    const classes = {
-      present: 'bg-green-100 text-green-800',
-      late: 'bg-yellow-100 text-yellow-800',
-      half_day: 'bg-orange-100 text-orange-800',
-      absent: 'bg-red-100 text-red-800',
-    };
-    return (
-      <span className={`px-2 py-0.5 rounded text-xs font-medium ${classes[status] || 'bg-gray-100 text-gray-800'}`}>
-        {status}
-      </span>
-    );
-  };
+  const columns = [
+    {
+      title: 'Student ID',
+      dataIndex: 'student_code',
+      key: 'student_code',
+      width: 110,
+      render: (text) => text || '-',
+    },
+    {
+      title: 'Name',
+      dataIndex: 'student_name',
+      key: 'student_name',
+      render: (text, record) => text || `Student #${record.student_id}`,
+    },
+    {
+      title: 'Class',
+      dataIndex: 'class_name',
+      key: 'class_name',
+      render: (text) => text || '-',
+    },
+    {
+      title: 'Date',
+      dataIndex: 'date',
+      key: 'date',
+      width: 110,
+      render: (text) => dayjs(text).format('YYYY-MM-DD'),
+    },
+    {
+      title: 'Check In',
+      dataIndex: 'check_in',
+      key: 'check_in',
+      width: 100,
+      render: (text) => text ? dayjs(text).format('HH:mm:ss') : '-',
+    },
+    {
+      title: 'Check Out',
+      dataIndex: 'check_out',
+      key: 'check_out',
+      width: 100,
+      render: (text) => text ? dayjs(text).format('HH:mm:ss') : '-',
+    },
+    {
+      title: 'Method',
+      dataIndex: 'method',
+      key: 'method',
+      width: 120,
+      render: (method) => (
+        <Tag color={methodColors[method] || 'default'}>
+          {method === 'rtsp_auto' ? 'Auto (Camera)' : 'Manual'}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status) => (
+        <Tag color={statusColors[status] || 'default'}>
+          {status?.toUpperCase()}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Confidence',
+      dataIndex: 'confidence',
+      key: 'confidence',
+      width: 100,
+      render: (val) => val != null ? `${(val * 100).toFixed(1)}%` : '-',
+    },
+  ];
 
-  const methodBadge = (method) => {
-    const classes = {
-      face_recognition: 'bg-indigo-100 text-indigo-800',
-      rtsp_auto: 'bg-purple-100 text-purple-800',
-      manual: 'bg-gray-100 text-gray-800',
-    };
-    const labels = {
-      face_recognition: 'Face Recognition',
-      rtsp_auto: 'RTSP Auto',
-      manual: 'Manual',
-    };
-    return (
-      <span className={`px-2 py-0.5 rounded text-xs font-medium ${classes[method] || 'bg-gray-100 text-gray-800'}`}>
-        {labels[method] || method}
-      </span>
-    );
-  };
+  const tabItems = [
+    {
+      key: 'today',
+      label: 'Today',
+      children: (
+        <>
+          <div className="filter-bar">
+            <Select
+              placeholder="Filter by class"
+              allowClear
+              style={{ width: 200 }}
+              value={filterClass}
+              onChange={(val) => setFilterClass(val)}
+            >
+              {classes.map((cls) => (
+                <Option key={cls.id} value={cls.id}>{cls.name}</Option>
+              ))}
+            </Select>
+            <Button icon={<ReloadOutlined />} onClick={fetchAttendance}>Refresh</Button>
+          </div>
+          <Table
+            columns={columns}
+            dataSource={records}
+            rowKey="id"
+            loading={loading}
+            pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `Total: ${t} records` }}
+            size="small"
+          />
+        </>
+      ),
+    },
+    {
+      key: 'history',
+      label: 'History',
+      children: (
+        <>
+          <div className="filter-bar">
+            <DatePicker
+              value={selectedDate}
+              onChange={(date) => setSelectedDate(date)}
+              allowClear={false}
+            />
+            <Select
+              placeholder="Filter by class"
+              allowClear
+              style={{ width: 200 }}
+              value={filterClass}
+              onChange={(val) => setFilterClass(val)}
+            >
+              {classes.map((cls) => (
+                <Option key={cls.id} value={cls.id}>{cls.name}</Option>
+              ))}
+            </Select>
+            <Button icon={<SearchOutlined />} onClick={fetchAttendance}>Search</Button>
+          </div>
+          <Table
+            columns={columns}
+            dataSource={records}
+            rowKey="id"
+            loading={loading}
+            pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `Total: ${t} records` }}
+            size="small"
+          />
+        </>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Attendance</h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
-            disabled={records.length === 0}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors disabled:opacity-50"
-          >
-            Export CSV
-          </button>
-        </div>
+      <div className="page-header">
+        <Title level={4} style={{ margin: 0 }}>Attendance Records</Title>
       </div>
 
-      {/* View mode toggle */}
-      <div className="flex items-center gap-4 mb-4">
-        <div className="inline-flex bg-gray-100 rounded-lg p-1">
-          <button
-            onClick={() => setViewMode('today')}
-            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              viewMode === 'today'
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <span style={{ fontWeight: 500 }}>Export to Excel:</span>
+          <RangePicker
+            value={exportRange}
+            onChange={(dates) => setExportRange(dates)}
+          />
+          <Select
+            placeholder="Class (optional)"
+            allowClear
+            style={{ width: 180 }}
+            value={exportClassId}
+            onChange={(val) => setExportClassId(val)}
           >
-            Today
-          </button>
-          <button
-            onClick={() => setViewMode('history')}
-            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              viewMode === 'history'
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+            {classes.map((cls) => (
+              <Option key={cls.id} value={cls.id}>{cls.name}</Option>
+            ))}
+          </Select>
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            onClick={handleExport}
+            loading={exporting}
           >
-            History
-          </button>
-        </div>
-      </div>
+            Export
+          </Button>
+        </Space>
+      </Card>
 
-      {/* Filters for history mode */}
-      {viewMode === 'history' && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Start Date</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">End Date</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Employee ID</label>
-              <input
-                type="text"
-                value={filterEmployeeId}
-                onChange={(e) => setFilterEmployeeId(e.target.value)}
-                placeholder="e.g. EMP001"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-              />
-            </div>
-            <div>
-              <button
-                onClick={fetchHistory}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
-              >
-                Search
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Attendance table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          {loading ? (
-            <div className="p-8 text-center text-gray-400">Loading...</div>
-          ) : records.length === 0 ? (
-            <div className="p-8 text-center text-gray-400">No attendance records found</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
-                  <th className="px-5 py-3 font-medium">Employee</th>
-                  <th className="px-5 py-3 font-medium">Date</th>
-                  <th className="px-5 py-3 font-medium">Check In</th>
-                  <th className="px-5 py-3 font-medium">Check Out</th>
-                  <th className="px-5 py-3 font-medium">Status</th>
-                  <th className="px-5 py-3 font-medium">Method</th>
-                  <th className="px-5 py-3 font-medium">Confidence</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {records.map((record) => (
-                  <tr key={record.id} className="hover:bg-gray-50">
-                    <td className="px-5 py-3 font-medium text-gray-900">
-                      {record.employee_name || `Employee #${record.employee_id}`}
-                    </td>
-                    <td className="px-5 py-3 text-gray-600">{formatDate(record.date)}</td>
-                    <td className="px-5 py-3 text-gray-600">{formatTime(record.check_in)}</td>
-                    <td className="px-5 py-3 text-gray-600">{formatTime(record.check_out)}</td>
-                    <td className="px-5 py-3">{statusBadge(record.status)}</td>
-                    <td className="px-5 py-3">{methodBadge(record.method)}</td>
-                    <td className="px-5 py-3 text-gray-600">
-                      {record.confidence != null
-                        ? `${(record.confidence * 100).toFixed(1)}%`
-                        : '--'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
     </div>
   );
 }
-
-export default Attendance;

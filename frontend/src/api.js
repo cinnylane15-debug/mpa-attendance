@@ -78,6 +78,22 @@ export async function apiPostFile(path, formData) {
   return handleResponse(response);
 }
 
+export async function apiGetBlob(path) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+  if (!response.ok) {
+    throw new Error(`Export failed with status ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function login(username, password) {
   const response = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',

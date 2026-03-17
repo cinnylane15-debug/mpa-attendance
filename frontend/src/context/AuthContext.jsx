@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react';
-import { login as apiLogin, fetchCurrentUser } from '../api';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { fetchCurrentUser } from '../api';
 
 const AuthContext = createContext(null);
 
@@ -13,10 +13,12 @@ export function AuthProvider({ children }) {
       fetchCurrentUser()
         .then((userData) => {
           setUser(userData);
+          localStorage.setItem('user', JSON.stringify(userData));
         })
         .catch(() => {
           localStorage.removeItem('token');
           localStorage.removeItem('user');
+          setUser(null);
         })
         .finally(() => setLoading(false));
     } else {
@@ -24,13 +26,10 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  const login = async (username, password) => {
-    const data = await apiLogin(username, password);
-    localStorage.setItem('token', data.access_token);
-    const userData = await fetchCurrentUser();
-    setUser(userData);
+  const loginUser = (token, userData) => {
+    localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(userData));
-    return userData;
+    setUser(userData);
   };
 
   const logout = () => {
@@ -40,7 +39,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, loginUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

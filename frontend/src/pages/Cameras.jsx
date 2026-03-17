@@ -1,300 +1,236 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
+import {
+  Card, Button, Modal, Form, Input, Select, Tag, message, Space, Typography, Popconfirm, Row, Col, Badge,
+} from 'antd';
+import {
+  PlusOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined,
+  ApiOutlined, CameraOutlined, EnvironmentOutlined,
+} from '@ant-design/icons';
 import { apiGet, apiPost, apiPut, apiDelete } from '../api';
 
-function Cameras() {
-  const [cameras, setCameras] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [showForm, setShowForm] = useState(false);
-  const [formData, setFormData] = useState({
-    name: '',
-    location: '',
-    rtsp_url: '',
-    direction: 'entry',
-  });
-  const [formError, setFormError] = useState('');
-  const [formLoading, setFormLoading] = useState(false);
-  const [testingCamera, setTestingCamera] = useState(null);
-  const [testResult, setTestResult] = useState(null);
+const { Title, Text, Paragraph } = Typography;
+const { Option } = Select;
 
-  const fetchCameras = useCallback(async () => {
+function maskRtspUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) {
+      parsed.password = '****';
+    }
+    return parsed.toString();
+  } catch {
+    return url.replace(/:([^@/]+)@/, ':****@');
+  }
+}
+
+export default function Cameras() {
+  const [cameras, setCameras] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form] = Form.useForm();
+
+  const fetchCameras = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const data = await apiGet('/cameras/');
-      setCameras(data);
-      setError('');
+      const data = await apiGet('/cameras');
+      setCameras(Array.isArray(data) ? data : data?.items || []);
     } catch (err) {
-      setError('Failed to load cameras. The camera API may not be configured yet.');
-      setCameras([]);
+      message.error('Failed to load cameras');
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
     fetchCameras();
-    const interval = setInterval(fetchCameras, 15000);
-    return () => clearInterval(interval);
-  }, [fetchCameras]);
+  }, []);
 
-  const resetForm = () => {
-    setFormData({ name: '', location: '', rtsp_url: '', direction: 'entry' });
-    setShowForm(false);
-    setFormError('');
+  const openAddModal = () => {
+    form.resetFields();
+    form.setFieldsValue({ direction: 'entry', is_active: true });
+    setModalOpen(true);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setFormError('');
-    setFormLoading(true);
+  const handleSubmit = async () => {
     try {
-      await apiPost('/cameras/', {
-        name: formData.name,
-        location: formData.location || null,
-        rtsp_url: formData.rtsp_url,
-        direction: formData.direction,
-      });
-      resetForm();
+      const values = await form.validateFields();
+      await apiPost('/cameras', values);
+      message.success('Camera added');
+      setModalOpen(false);
       fetchCameras();
     } catch (err) {
-      setFormError(err.message);
-    } finally {
-      setFormLoading(false);
+      if (err.message) message.error(err.message);
     }
   };
 
-  const handleDelete = async (cam) => {
-    if (!confirm(`Are you sure you want to delete camera "${cam.name}"?`)) return;
+  const handleDelete = async (id) => {
     try {
-      await apiDelete(`/cameras/${cam.id}`);
+      await apiDelete(`/cameras/${id}`);
+      message.success('Camera deleted');
       fetchCameras();
     } catch (err) {
-      alert(err.message);
+      message.error(err.message || 'Failed to delete camera');
     }
   };
 
-  const handleToggleActive = async (cam) => {
+  const handleToggle = async (camera) => {
     try {
-      await apiPut(`/cameras/${cam.id}`, { is_active: !cam.is_active });
+      await apiPut(`/cameras/${camera.id}`, { is_active: !camera.is_active });
+      message.success(`Camera ${camera.is_active ? 'stopped' : 'started'}`);
       fetchCameras();
     } catch (err) {
-      alert(err.message);
+      message.error(err.message || 'Failed to toggle camera');
     }
   };
 
-  const handleTestConnection = async (cam) => {
-    setTestingCamera(cam.id);
-    setTestResult(null);
+  const handleTestConnection = async (id) => {
     try {
-      const result = await apiPost(`/cameras/${cam.id}/test`, {});
-      setTestResult({
-        id: cam.id,
-        success: result.connected !== false,
-        message: result.message || (result.connected ? 'Connection successful' : result.error || 'Connection failed'),
-      });
-    } catch (err) {
-      setTestResult({ id: cam.id, success: false, message: err.message || 'Connection failed' });
-    } finally {
-      setTestingCamera(null);
-    }
-  };
-
-  const handleToggleProcessing = async (cam) => {
-    try {
-      if (cam.is_active) {
-        await apiPost(`/cameras/${cam.id}/stop`, {});
+      const result = await apiPost(`/cameras/${id}/test`, {});
+      if (result?.success || result?.status === 'ok') {
+        message.success('Connection successful');
       } else {
-        await apiPost(`/cameras/${cam.id}/start`, {});
+        message.warning(result?.message || 'Connection test completed');
       }
-      fetchCameras();
     } catch (err) {
-      alert(err.message);
+      message.error(err.message || 'Connection test failed');
     }
   };
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Cameras</h1>
-        <button
-          onClick={() => {
-            resetForm();
-            setShowForm(!showForm);
-          }}
-          className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
-        >
-          {showForm ? 'Cancel' : 'Add Camera'}
-        </button>
+      <div className="page-header">
+        <Title level={4} style={{ margin: 0 }}>Cameras</Title>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAddModal}>
+          Add Camera
+        </Button>
       </div>
 
-      {error && (
-        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-yellow-700 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Add camera form */}
-      {showForm && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Add New Camera</h2>
-          {formError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-              {formError}
-            </div>
-          )}
-          <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Camera Name</label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
-                placeholder="e.g. Main Entrance Camera"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Location</label>
-              <input
-                type="text"
-                value={formData.location}
-                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
-                placeholder="e.g. Building A, Floor 1"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">RTSP URL</label>
-              <input
-                type="text"
-                value={formData.rtsp_url}
-                onChange={(e) => setFormData({ ...formData, rtsp_url: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm font-mono"
-                placeholder="rtsp://admin:pass@192.168.1.100:554/cam/realmonitor?channel=1&subtype=1"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Direction</label>
-              <select
-                value={formData.direction}
-                onChange={(e) => setFormData({ ...formData, direction: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
-              >
-                <option value="entry">Entry (Check-in)</option>
-                <option value="exit">Exit (Check-out)</option>
-              </select>
-            </div>
-            <div className="md:col-span-2">
-              <button
-                type="submit"
-                disabled={formLoading}
-                className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50"
-              >
-                {formLoading ? 'Adding...' : 'Add Camera'}
-              </button>
-            </div>
-          </form>
-          <div className="mt-4 p-3 bg-gray-50 rounded-lg">
-            <p className="text-xs font-semibold text-gray-600 mb-1">Dahua RTSP URL Format</p>
-            <code className="text-xs text-gray-500">rtsp://username:password@camera-ip:554/cam/realmonitor?channel=1&subtype=1</code>
-            <p className="text-xs text-gray-400 mt-1">Use subtype=1 for sub-stream (lower bandwidth), subtype=0 for main stream</p>
-          </div>
-        </div>
-      )}
-
-      {/* Camera cards */}
-      {loading ? (
-        <div className="text-center py-12 text-gray-400">Loading cameras...</div>
-      ) : cameras.length === 0 && !error ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-          <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-          <p className="text-gray-500">No cameras configured yet</p>
-          <p className="text-gray-400 text-sm mt-1">Add a camera to start monitoring attendance</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {cameras.map((cam) => (
-            <div
-              key={cam.id}
-              className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden"
+      <Row gutter={[16, 16]}>
+        {cameras.map((camera) => (
+          <Col xs={24} sm={12} lg={8} key={camera.id}>
+            <Card
+              className="camera-card"
+              title={
+                <Space>
+                  <CameraOutlined />
+                  <span>{camera.name}</span>
+                </Space>
+              }
+              extra={
+                <Badge
+                  status={camera.is_active ? 'success' : 'error'}
+                  text={camera.is_active ? 'Active' : 'Inactive'}
+                />
+              }
             >
-              <div className="p-5">
-                <div className="flex items-start justify-between mb-3">
+              <div style={{ marginBottom: 12 }}>
+                <Space direction="vertical" style={{ width: '100%' }}>
                   <div>
-                    <h3 className="font-semibold text-gray-900">{cam.name}</h3>
-                    <p className="text-sm text-gray-500 mt-0.5">{cam.location || 'No location set'}</p>
+                    <EnvironmentOutlined style={{ marginRight: 8, color: '#888' }} />
+                    <Text type="secondary">{camera.location || 'No location set'}</Text>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded text-xs font-medium ${
-                        cam.direction === 'entry'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-orange-100 text-orange-700'
-                      }`}
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>RTSP URL:</Text>
+                    <Paragraph
+                      copyable={{ text: camera.rtsp_url }}
+                      style={{ fontSize: 12, margin: '4px 0 0 0', wordBreak: 'break-all' }}
+                      ellipsis={{ rows: 2 }}
                     >
-                      {cam.direction === 'entry' ? 'Entry' : 'Exit'}
-                    </span>
-                    <span
-                      className={`w-3 h-3 rounded-full ${
-                        cam.is_active ? 'bg-green-500' : 'bg-gray-400'
-                      }`}
-                      title={cam.is_active ? 'Active' : 'Inactive'}
-                    />
+                      {maskRtspUrl(camera.rtsp_url)}
+                    </Paragraph>
                   </div>
-                </div>
-
-                <div className="bg-gray-50 rounded p-2 mb-4">
-                  <p className="text-xs font-mono text-gray-500 break-all">{cam.rtsp_url}</p>
-                </div>
-
-                {testResult && testResult.id === cam.id && (
-                  <div
-                    className={`mb-3 p-2 rounded text-xs ${
-                      testResult.success
-                        ? 'bg-green-50 text-green-700 border border-green-200'
-                        : 'bg-red-50 text-red-700 border border-red-200'
-                    }`}
-                  >
-                    {testResult.message}
+                  <div>
+                    <Tag color={camera.direction === 'entry' ? 'green' : 'orange'}>
+                      {camera.direction === 'entry' ? 'Entry' : 'Exit'}
+                    </Tag>
                   </div>
-                )}
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={() => handleTestConnection(cam)}
-                    disabled={testingCamera === cam.id}
-                    className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-xs font-medium hover:bg-gray-200 transition-colors disabled:opacity-50"
-                  >
-                    {testingCamera === cam.id ? 'Testing...' : 'Test Connection'}
-                  </button>
-                  <button
-                    onClick={() => handleToggleProcessing(cam)}
-                    className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                      cam.is_active
-                        ? 'bg-red-100 text-red-700 hover:bg-red-200'
-                        : 'bg-green-100 text-green-700 hover:bg-green-200'
-                    }`}
-                  >
-                    {cam.is_active ? 'Stop' : 'Start'}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(cam)}
-                    className="px-3 py-1.5 bg-red-50 text-red-600 rounded text-xs font-medium hover:bg-red-100 transition-colors"
-                  >
-                    Delete
-                  </button>
-                </div>
+                </Space>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+              <Space wrap>
+                <Button
+                  size="small"
+                  icon={camera.is_active ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                  onClick={() => handleToggle(camera)}
+                >
+                  {camera.is_active ? 'Stop' : 'Start'}
+                </Button>
+                <Button
+                  size="small"
+                  icon={<ApiOutlined />}
+                  onClick={() => handleTestConnection(camera.id)}
+                >
+                  Test
+                </Button>
+                <Popconfirm
+                  title="Delete this camera?"
+                  onConfirm={() => handleDelete(camera.id)}
+                  okText="Yes"
+                  cancelText="No"
+                >
+                  <Button size="small" icon={<DeleteOutlined />} danger />
+                </Popconfirm>
+              </Space>
+            </Card>
+          </Col>
+        ))}
+        {cameras.length === 0 && !loading && (
+          <Col span={24}>
+            <Card>
+              <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+                <CameraOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+                <div>No cameras configured. Click "Add Camera" to get started.</div>
+              </div>
+            </Card>
+          </Col>
+        )}
+      </Row>
+
+      <Modal
+        title="Add Camera"
+        open={modalOpen}
+        onOk={handleSubmit}
+        onCancel={() => setModalOpen(false)}
+        okText="Add"
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item
+            name="name"
+            label="Camera Name"
+            rules={[{ required: true, message: 'Camera name is required' }]}
+          >
+            <Input placeholder="e.g., Main Gate Camera" />
+          </Form.Item>
+          <Form.Item name="location" label="Location">
+            <Input placeholder="e.g., Front Entrance" />
+          </Form.Item>
+          <Form.Item
+            name="rtsp_url"
+            label="RTSP URL"
+            rules={[{ required: true, message: 'RTSP URL is required' }]}
+            extra="Dahua format: rtsp://admin:password@192.168.1.108:554/cam/realmonitor?channel=1&subtype=0"
+          >
+            <Input placeholder="rtsp://username:password@ip:port/path" />
+          </Form.Item>
+          <Form.Item
+            name="direction"
+            label="Direction"
+            rules={[{ required: true }]}
+          >
+            <Select>
+              <Option value="entry">Entry</Option>
+              <Option value="exit">Exit</Option>
+            </Select>
+          </Form.Item>
+          <Form.Item name="is_active" label="Active" valuePropName="value">
+            <Select>
+              <Option value={true}>Yes</Option>
+              <Option value={false}>No</Option>
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }
-
-export default Cameras;

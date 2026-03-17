@@ -1,32 +1,36 @@
+import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import Layout from './components/Layout';
+import AppLayout from './components/AppLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import Employees from './pages/Employees';
+import Students from './pages/Students';
+import Classes from './pages/Classes';
 import Attendance from './pages/Attendance';
 import Cameras from './pages/Cameras';
+import Schedules from './pages/Schedules';
+import Holidays from './pages/Holidays';
 
-function App() {
+export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
-        path="/"
         element={
           <ProtectedRoute>
-            <Layout />
+            <AppLayout />
           </ProtectedRoute>
         }
       >
-        <Route index element={<Dashboard />} />
-        <Route path="employees" element={<Employees />} />
-        <Route path="attendance" element={<Attendance />} />
-        <Route path="cameras" element={<Cameras />} />
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/students" element={<Students />} />
+        <Route path="/classes" element={<Classes />} />
+        <Route path="/attendance" element={<Attendance />} />
+        <Route path="/cameras" element={<Cameras />} />
+        <Route path="/schedules" element={<Schedules />} />
+        <Route path="/holidays" element={<Holidays />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
-
-export default App;
