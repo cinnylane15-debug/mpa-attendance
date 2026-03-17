@@ -6,12 +6,9 @@ from app.config import settings
 from app.database import engine, Base
 from app.routers import auth_router, employees, attendance, dashboard
 
-# Create all tables on startup
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(
     title=settings.APP_NAME,
-    version=settings.APP_VERSION,
+    version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -25,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Routers
 app.include_router(auth_router.router)
 app.include_router(employees.router)
 app.include_router(attendance.router)
@@ -36,62 +33,63 @@ redis_client = None
 
 
 @app.on_event("startup")
-def startup_event():
+def on_startup():
     global redis_client
+    # Create tables
+    Base.metadata.create_all(bind=engine)
+
+    # Connect to Redis
     redis_client = redis.Redis(
         host=settings.REDIS_HOST,
         port=settings.REDIS_PORT,
         password=settings.REDIS_PASSWORD,
-        db=settings.REDIS_DB,
         decode_responses=True,
     )
+    app.state.redis = redis_client
     try:
         redis_client.ping()
-        print("Connected to Redis")
+        print("Redis connected successfully")
     except redis.ConnectionError:
-        print("Warning: Could not connect to Redis. Caching disabled.")
-        redis_client = None
-    app.state.redis = redis_client
+        print("Warning: Redis connection failed. Continuing without cache.")
 
 
 @app.on_event("shutdown")
-def shutdown_event():
-    if app.state.redis:
-        app.state.redis.close()
-        print("Redis connection closed")
+def on_shutdown():
+    global redis_client
+    if redis_client:
+        redis_client.close()
 
 
-@app.get("/", tags=["Root"])
+@app.get("/", tags=["Health"])
 def root():
     return {
         "app": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "docs": "/docs",
+        "version": "1.0.0",
+        "status": "running",
     }
 
 
 @app.get("/health", tags=["Health"])
 def health_check():
-    redis_ok = False
-    if app.state.redis:
-        try:
-            app.state.redis.ping()
-            redis_ok = True
-        except Exception:
-            pass
+    db_status = "unknown"
+    redis_status = "unknown"
 
-    db_ok = False
+    # Check database
     try:
+        from sqlalchemy import text
         from app.database import SessionLocal
-        session = SessionLocal()
-        session.execute("SELECT 1")
-        session.close()
-        db_ok = True
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        db_status = "connected"
     except Exception:
-        pass
+        db_status = "disconnected"
 
-    return {
-        "status": "healthy" if (db_ok and redis_ok) else "degraded",
-        "database": "connected" if db_ok else "disconnected",
-        "redis": "connected" if redis_ok else "disconnected",
-    }
+    # Check Redis
+    try:
+        if redis_client and redis_client.ping():
+            redis_status = "connected"
+    except Exception:
+        redis_status = "disconnected"
+
+    return {"status": "healthy", "database": db_status, "redis": redis_status}

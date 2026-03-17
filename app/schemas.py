@@ -1,26 +1,33 @@
 import datetime
 from typing import Optional, List
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel, EmailStr, Field
+from app.models import UserRole, AttendanceStatus, CheckMethod
 
 
-# ── Auth ─────────────────────────────────────────────────────────────────
+# -- Auth / User ---------------------------------------------------------------
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
-    email: EmailStr
+    email: str = Field(..., max_length=255)
     password: str = Field(..., min_length=6)
-    role: str = Field(default="admin", pattern="^(admin|viewer)$")
+    role: UserRole = UserRole.viewer
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
 
 
 class UserOut(BaseModel):
     id: int
     username: str
     email: str
-    role: str
+    role: UserRole
     created_at: datetime.datetime
 
-    model_config = {"from_attributes": True}
+    class Config:
+        from_attributes = True
 
 
 class Token(BaseModel):
@@ -28,17 +35,17 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
+class TokenData(BaseModel):
+    user_id: Optional[int] = None
+    username: Optional[str] = None
 
 
-# ── Employee ─────────────────────────────────────────────────────────────
+# -- Employee ------------------------------------------------------------------
 
 class EmployeeCreate(BaseModel):
-    employee_id: str = Field(..., min_length=1, max_length=50)
-    name: str = Field(..., min_length=1, max_length=200)
-    department: str = Field(..., min_length=1, max_length=100)
+    employee_id: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=200)
+    department: Optional[str] = Field(None, max_length=100)
 
 
 class EmployeeUpdate(BaseModel):
@@ -51,67 +58,67 @@ class EmployeeOut(BaseModel):
     id: int
     employee_id: str
     name: str
-    department: str
-    photo_path: Optional[str] = None
-    has_face_encoding: bool = False
+    department: Optional[str]
+    photo_path: Optional[str]
     is_active: bool
+    has_face_encoding: bool = False
     created_at: datetime.datetime
 
-    model_config = {"from_attributes": True}
-
-    @classmethod
-    def from_model(cls, emp):
-        return cls(
-            id=emp.id,
-            employee_id=emp.employee_id,
-            name=emp.name,
-            department=emp.department,
-            photo_path=emp.photo_path,
-            has_face_encoding=emp.face_encoding is not None,
-            is_active=emp.is_active,
-            created_at=emp.created_at,
-        )
+    class Config:
+        from_attributes = True
 
 
-# ── Attendance ───────────────────────────────────────────────────────────
+# -- Attendance ----------------------------------------------------------------
 
-class AttendanceOut(BaseModel):
+class AttendanceRecordOut(BaseModel):
     id: int
     employee_id: int
     employee_name: Optional[str] = None
-    employee_code: Optional[str] = None
-    check_in: Optional[datetime.datetime] = None
-    check_out: Optional[datetime.datetime] = None
+    check_in: Optional[datetime.datetime]
+    check_out: Optional[datetime.datetime]
     date: datetime.date
-    status: str
-    method: str
-    confidence: Optional[float] = None
+    status: AttendanceStatus
+    method: CheckMethod
+    confidence: Optional[float]
     created_at: datetime.datetime
 
-    model_config = {"from_attributes": True}
+    class Config:
+        from_attributes = True
 
 
-class CheckInResponse(BaseModel):
+class FaceCheckInResponse(BaseModel):
+    success: bool
     message: str
-    employee_name: str
+    employee_name: Optional[str] = None
+    employee_id: Optional[str] = None
+    confidence: Optional[float] = None
+    attendance_id: Optional[int] = None
+
+
+class CheckOutRequest(BaseModel):
     employee_id: str
-    confidence: float
-    attendance_id: int
 
 
 class CheckOutResponse(BaseModel):
+    success: bool
     message: str
-    employee_name: str
-    employee_id: str
-    check_out: datetime.datetime
+    employee_name: Optional[str] = None
+    check_out: Optional[datetime.datetime] = None
 
 
-# ── Dashboard ────────────────────────────────────────────────────────────
+class AttendanceReportQuery(BaseModel):
+    start_date: Optional[datetime.date] = None
+    end_date: Optional[datetime.date] = None
+    employee_id: Optional[str] = None
+    department: Optional[str] = None
+
+
+# -- Dashboard -----------------------------------------------------------------
 
 class DashboardStats(BaseModel):
     total_employees: int
     active_employees: int
     today_present: int
     today_absent: int
-    today_checked_out: int
-    recent_activity: List[AttendanceOut]
+    today_late: int
+    recent_activity: List[AttendanceRecordOut]

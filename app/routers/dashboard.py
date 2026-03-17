@@ -1,12 +1,10 @@
 import datetime
-from typing import List
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Employee, AttendanceRecord, User
-from app.schemas import DashboardStats, AttendanceOut
+from app.models import Employee, AttendanceRecord
+from app.schemas import DashboardStats, AttendanceRecordOut
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
@@ -15,13 +13,13 @@ router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 @router.get("/stats", response_model=DashboardStats)
 def dashboard_stats(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    _current_user=Depends(get_current_user),
 ):
-    """Get dashboard statistics for today."""
+    """Get dashboard statistics: totals, today's attendance, recent activity."""
     today = datetime.date.today()
 
     total_employees = db.query(Employee).count()
-    active_employees = db.query(Employee).filter(Employee.is_active.is_(True)).count()
+    active_employees = db.query(Employee).filter(Employee.is_active == True).count()
 
     today_records = (
         db.query(AttendanceRecord)
@@ -29,11 +27,9 @@ def dashboard_stats(
         .all()
     )
 
-    today_present = len(today_records)
+    today_present = sum(1 for r in today_records if r.status in ("present", "late", "half_day"))
+    today_late = sum(1 for r in today_records if r.status == "late")
     today_absent = active_employees - today_present
-    if today_absent < 0:
-        today_absent = 0
-    today_checked_out = sum(1 for r in today_records if r.check_out is not None)
 
     # Recent activity: last 10 attendance records
     recent = (
@@ -43,21 +39,20 @@ def dashboard_stats(
         .all()
     )
 
-    recent_activity: List[AttendanceOut] = []
-    for record in recent:
-        recent_activity.append(
-            AttendanceOut(
-                id=record.id,
-                employee_id=record.employee_id,
-                employee_name=record.employee.name if record.employee else None,
-                employee_code=record.employee.employee_id if record.employee else None,
-                check_in=record.check_in,
-                check_out=record.check_out,
-                date=record.date,
-                status=record.status,
-                method=record.method,
-                confidence=record.confidence,
-                created_at=record.created_at,
+    recent_out = []
+    for r in recent:
+        recent_out.append(
+            AttendanceRecordOut(
+                id=r.id,
+                employee_id=r.employee_id,
+                employee_name=r.employee.name if r.employee else None,
+                check_in=r.check_in,
+                check_out=r.check_out,
+                date=r.date,
+                status=r.status,
+                method=r.method,
+                confidence=r.confidence,
+                created_at=r.created_at,
             )
         )
 
@@ -65,7 +60,7 @@ def dashboard_stats(
         total_employees=total_employees,
         active_employees=active_employees,
         today_present=today_present,
-        today_absent=today_absent,
-        today_checked_out=today_checked_out,
-        recent_activity=recent_activity,
+        today_absent=max(today_absent, 0),
+        today_late=today_late,
+        recent_activity=recent_out,
     )
