@@ -15,6 +15,7 @@ from routers import (
     deploy,
     docker,
     files,
+    gateway,
     network,
     packages,
     services,
@@ -65,6 +66,7 @@ app.include_router(services.router)
 app.include_router(files.router)
 app.include_router(commands.router)
 app.include_router(network.router)
+app.include_router(gateway.router)
 
 
 @app.get("/health", tags=["Health"])
