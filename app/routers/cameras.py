@@ -1,149 +1,161 @@
-import datetime
-from typing import List
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db
-from app.models import Camera
-from app.rtsp_worker import (
-    get_worker_status,
-    start_camera_worker,
-    stop_camera_worker,
-    test_rtsp_connection,
-)
-from app.schemas import CameraCreate, CameraResponse, CameraStatusResponse, CameraUpdate
+from app.models import Camera, User
+from app.rtsp_worker import rtsp_manager
+from app.schemas import CameraCreate, CameraUpdate, CameraResponse
 
 router = APIRouter(prefix="/api/cameras", tags=["Cameras"])
 
 
-@router.get("/", response_model=List[CameraResponse])
-def list_cameras(
-    db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
-):
-    """List all cameras."""
-    cameras = db.query(Camera).order_by(Camera.created_at.desc()).all()
-    return cameras
-
-
-@router.post("/", response_model=CameraResponse, status_code=201)
+@router.post("/", response_model=CameraResponse, status_code=status.HTTP_201_CREATED)
 def create_camera(
-    payload: CameraCreate,
+    cam_in: CameraCreate,
     db: Session = Depends(get_db),
-    _current_user=Depends(require_admin),
+    current_user: User = Depends(require_admin),
 ):
-    """Add a new camera."""
+    """Create a new camera (admin only)."""
     camera = Camera(
-        name=payload.name,
-        location=payload.location,
-        rtsp_url=payload.rtsp_url,
-        direction=payload.direction,
+        name=cam_in.name,
+        location=cam_in.location,
+        rtsp_url=cam_in.rtsp_url,
+        is_active=cam_in.is_active,
+        direction=cam_in.direction,
     )
     db.add(camera)
     db.commit()
     db.refresh(camera)
-
-    # Auto-start worker for the new camera
-    if camera.is_active:
-        start_camera_worker(camera)
-
     return camera
 
 
-@router.get("/status", response_model=List[CameraStatusResponse])
-def cameras_status(
+@router.get("/", response_model=list[CameraResponse])
+def list_cameras(
     db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    """Show which cameras are actively processing."""
-    cameras = db.query(Camera).order_by(Camera.id).all()
-    worker_status = get_worker_status()
-    result = []
+    """List all cameras."""
+    cameras = db.query(Camera).order_by(Camera.name).all()
+    results = []
     for cam in cameras:
-        ws = worker_status.get(cam.id, {})
-        result.append(
-            CameraStatusResponse(
-                id=cam.id,
-                name=cam.name,
-                location=cam.location,
-                direction=cam.direction,
-                is_active=cam.is_active,
-                is_processing=ws.get("is_running", False),
-                last_frame_at=ws.get("last_frame_at"),
-            )
+        resp = CameraResponse(
+            id=cam.id,
+            name=cam.name,
+            location=cam.location,
+            rtsp_url=cam.rtsp_url,
+            is_active=cam.is_active,
+            direction=cam.direction.value,
+            created_at=cam.created_at,
         )
-    return result
+        results.append(resp)
+    return results
 
 
 @router.get("/{camera_id}", response_model=CameraResponse)
 def get_camera(
     camera_id: int,
     db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    """Get details of a single camera."""
-    camera = db.query(Camera).filter(Camera.id == camera_id).first()
-    if not camera:
+    """Get a single camera."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
-    return camera
+    return CameraResponse(
+        id=cam.id,
+        name=cam.name,
+        location=cam.location,
+        rtsp_url=cam.rtsp_url,
+        is_active=cam.is_active,
+        direction=cam.direction.value,
+        created_at=cam.created_at,
+    )
 
 
 @router.put("/{camera_id}", response_model=CameraResponse)
 def update_camera(
     camera_id: int,
-    payload: CameraUpdate,
+    cam_in: CameraUpdate,
     db: Session = Depends(get_db),
-    _current_user=Depends(require_admin),
+    current_user: User = Depends(require_admin),
 ):
-    """Update a camera's configuration."""
-    camera = db.query(Camera).filter(Camera.id == camera_id).first()
-    if not camera:
+    """Update a camera (admin only)."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    update_data = payload.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(camera, key, value)
-
+    for key, value in cam_in.model_dump(exclude_unset=True).items():
+        setattr(cam, key, value)
     db.commit()
-    db.refresh(camera)
+    db.refresh(cam)
+    return CameraResponse(
+        id=cam.id,
+        name=cam.name,
+        location=cam.location,
+        rtsp_url=cam.rtsp_url,
+        is_active=cam.is_active,
+        direction=cam.direction.value,
+        created_at=cam.created_at,
+    )
 
-    # Restart worker if the camera config changed
-    stop_camera_worker(camera.id)
-    if camera.is_active:
-        start_camera_worker(camera)
 
-    return camera
-
-
-@router.delete("/{camera_id}")
+@router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_camera(
     camera_id: int,
     db: Session = Depends(get_db),
-    _current_user=Depends(require_admin),
+    current_user: User = Depends(require_admin),
 ):
-    """Delete a camera."""
-    camera = db.query(Camera).filter(Camera.id == camera_id).first()
-    if not camera:
+    """Delete a camera (admin only)."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
-
-    stop_camera_worker(camera.id)
-    db.delete(camera)
+    # Stop worker if running
+    rtsp_manager.stop_camera(camera_id)
+    db.delete(cam)
     db.commit()
-    return {"detail": "Camera deleted"}
 
 
-@router.post("/{camera_id}/test")
-def test_camera_connection(
+@router.post("/{camera_id}/start")
+def start_camera(
     camera_id: int,
     db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
-    """Test the RTSP connection for a camera."""
-    camera = db.query(Camera).filter(Camera.id == camera_id).first()
-    if not camera:
+    """Start the RTSP worker for a camera."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    success, message = test_rtsp_connection(camera.rtsp_url)
-    return {"success": success, "message": message, "camera_name": camera.name}
+    rtsp_manager.start_camera(cam.id, cam.name, cam.rtsp_url, cam.direction.value)
+    return {"message": f"Camera '{cam.name}' worker started"}
+
+
+@router.post("/{camera_id}/stop")
+def stop_camera(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Stop the RTSP worker for a camera."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    rtsp_manager.stop_camera(cam.id)
+    return {"message": f"Camera '{cam.name}' worker stopped"}
+
+
+@router.get("/{camera_id}/status")
+def camera_status(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Check if a camera worker is running."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    running = rtsp_manager.is_running(camera_id)
+    return {"camera_id": camera_id, "name": cam.name, "is_running": running}

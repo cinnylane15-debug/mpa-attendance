@@ -1,44 +1,41 @@
 from pydantic_settings import BaseSettings
-from pathlib import Path
+from typing import Optional
 
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql://mpa_admin:MpaSecure2026x@localhost:5432/mpa_attendance"
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/mpa_attendance"
 
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    REDIS_PASSWORD: str = "MpaRedis2026x"
+    REDIS_PASSWORD: Optional[str] = None
 
     # JWT
-    SECRET_KEY: str = "change-me-to-a-secure-random-string"
+    SECRET_KEY: str = "change-this-to-a-secure-random-string-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
 
-    # Face recognition
-    FACE_RECOGNITION_TOLERANCE: float = 0.6
+    # Face Recognition
+    FACE_RECOGNITION_TOLERANCE: float = 0.4
+    INSIGHTFACE_MODEL: str = "buffalo_sc"
 
-    # File uploads
-    UPLOAD_DIR: str = "/opt/mpa-app/uploads"
+    # File Uploads
+    UPLOAD_DIR: str = "uploads/photos"
 
-    # RTSP / Camera
-    RTSP_FRAME_INTERVAL: float = 2.0  # seconds between frame captures
-    RTSP_COOLDOWN_MINUTES: int = 30  # duplicate check-in cooldown
-    RTSP_ENCODING_RELOAD_SECONDS: int = 60  # reload face encodings interval
-    RTSP_RECONNECT_DELAY: int = 5  # seconds before reconnect attempt
+    # RTSP Settings
+    RTSP_FRAME_INTERVAL: float = 2.0
+    RTSP_COOLDOWN_MINUTES: int = 30
+    RTSP_RECONNECT_DELAY: float = 5.0
 
-    # App
-    APP_NAME: str = "MPA Face Recognition Attendance System"
-    DEBUG: bool = False
+    # School Settings
+    SCHOOL_START_TIME: str = "08:00"
+    LATE_THRESHOLD_MINUTES: int = 15
 
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-    }
+    # CORS
+    CORS_ORIGINS: list[str] = ["*"]
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
-
-# Ensure upload directory exists
-Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)

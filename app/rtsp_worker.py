@@ -1,427 +1,277 @@
-"""
-Background RTSP camera workers for automatic face-recognition attendance.
-
-Each active camera runs in its own daemon thread. The worker connects to the
-RTSP stream via OpenCV, captures frames at a configurable interval, runs
-face_recognition against all registered employee encodings, and records
-attendance automatically.
-"""
-
-import datetime
-import json
 import logging
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from collections import deque
+from datetime import datetime, timedelta, timezone, date
 
 import cv2
-import face_recognition
 import numpy as np
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import (
-    AttendanceRecord,
-    AttendanceStatus,
-    Camera,
-    CameraDirection,
-    CheckMethod,
-    Employee,
-)
+from app.face_engine import face_engine
+from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student
 
-logger = logging.getLogger("rtsp_worker")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
-    logger.addHandler(handler)
-
-# ---------------------------------------------------------------------------
-# Global registry of running workers
-# ---------------------------------------------------------------------------
-
-_workers: Dict[int, "CameraWorker"] = {}
-_workers_lock = threading.Lock()
-
-# Recent auto-detections kept in memory for the live endpoint
-_recent_detections: List[dict] = []
-_detections_lock = threading.Lock()
-
-MAX_RECENT_DETECTIONS = 500  # ring-buffer cap
+logger = logging.getLogger(__name__)
 
 
-def _add_detection(detection: dict) -> None:
-    with _detections_lock:
-        _recent_detections.append(detection)
-        # Trim old entries beyond cap
-        if len(_recent_detections) > MAX_RECENT_DETECTIONS:
-            del _recent_detections[: len(_recent_detections) - MAX_RECENT_DETECTIONS]
+class RecentDetection:
+    """A recent face detection for the live feed."""
 
+    def __init__(self, student_name: str, student_id: str, camera_name: str,
+                 confidence: float, timestamp: datetime):
+        self.student_name = student_name
+        self.student_id = student_id
+        self.camera_name = camera_name
+        self.confidence = confidence
+        self.timestamp = timestamp
 
-def get_recent_detections(minutes: int = 5) -> List[dict]:
-    """Return detections from the last *minutes* minutes."""
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=minutes)
-    with _detections_lock:
-        return [d for d in _recent_detections if d["detected_at"] >= cutoff]
-
-
-# ---------------------------------------------------------------------------
-# Face-encoding cache (shared across workers, refreshed periodically)
-# ---------------------------------------------------------------------------
-
-_encodings_cache: List[Tuple[int, str, str, Optional[str], np.ndarray]] = []
-_encodings_lock = threading.Lock()
-_encodings_last_loaded: float = 0.0
-
-
-def _reload_encodings() -> None:
-    """Load all active employee face encodings from the database."""
-    global _encodings_last_loaded
-    db: Session = SessionLocal()
-    try:
-        employees = (
-            db.query(Employee)
-            .filter(Employee.is_active.is_(True), Employee.face_encoding.isnot(None))
-            .all()
-        )
-        new_cache = []
-        for emp in employees:
-            try:
-                enc = np.array(json.loads(emp.face_encoding))
-                new_cache.append(
-                    (emp.id, emp.employee_id, emp.name, emp.department, enc)
-                )
-            except Exception:
-                logger.warning("Skipping bad encoding for employee %s", emp.employee_id)
-        with _encodings_lock:
-            global _encodings_cache
-            _encodings_cache = new_cache
-        _encodings_last_loaded = time.monotonic()
-        logger.info("Loaded %d employee face encodings", len(new_cache))
-    except Exception:
-        logger.exception("Failed to reload face encodings")
-    finally:
-        db.close()
-
-
-def _get_encodings() -> List[Tuple[int, str, str, Optional[str], np.ndarray]]:
-    """Return cached encodings, reloading if stale."""
-    if time.monotonic() - _encodings_last_loaded > settings.RTSP_ENCODING_RELOAD_SECONDS:
-        _reload_encodings()
-    with _encodings_lock:
-        return list(_encodings_cache)
-
-
-# ---------------------------------------------------------------------------
-# Camera worker
-# ---------------------------------------------------------------------------
+    def to_dict(self) -> dict:
+        return {
+            "student_name": self.student_name,
+            "student_id": self.student_id,
+            "camera_name": self.camera_name,
+            "confidence": round(self.confidence, 3),
+            "timestamp": self.timestamp.isoformat(),
+        }
 
 
 class CameraWorker:
-    """Runs in a daemon thread, reading frames from one RTSP camera."""
+    """Background worker that processes RTSP stream from a single camera."""
 
-    def __init__(self, camera_id: int, name: str, rtsp_url: str, direction: str, location: Optional[str] = None):
+    def __init__(self, camera_id: int, camera_name: str, rtsp_url: str, direction: str):
         self.camera_id = camera_id
-        self.name = name
+        self.camera_name = camera_name
         self.rtsp_url = rtsp_url
         self.direction = direction
-        self.location = location
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self.last_frame_at: Optional[datetime.datetime] = None
+        self._thread: threading.Thread | None = None
+        # Cooldown: track last attendance time per student to prevent duplicates
+        self._last_attendance: dict[int, datetime] = {}
 
-        # Cooldown tracking: employee_id -> last detection time
-        self._cooldowns: Dict[int, datetime.datetime] = {}
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def start(self) -> None:
-        if self.is_running:
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            logger.warning("Worker for camera %s is already running", self.camera_name)
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run, name=f"rtsp-cam-{self.camera_id}", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{self.camera_name}")
         self._thread.start()
-        logger.info("Started worker for camera %d (%s)", self.camera_id, self.name)
+        logger.info("Started RTSP worker for camera: %s", self.camera_name)
 
-    def stop(self) -> None:
+    def stop(self):
         self._stop_event.set()
-        if self._thread is not None:
+        if self._thread:
             self._thread.join(timeout=10)
-            self._thread = None
-        logger.info("Stopped worker for camera %d (%s)", self.camera_id, self.name)
+            logger.info("Stopped RTSP worker for camera: %s", self.camera_name)
 
-    # ---- internal -----------------------------------------------------------
+    def _is_on_cooldown(self, student_db_id: int) -> bool:
+        last = self._last_attendance.get(student_db_id)
+        if last is None:
+            return False
+        elapsed = (datetime.now(timezone.utc) - last).total_seconds() / 60
+        return elapsed < settings.RTSP_COOLDOWN_MINUTES
 
-    def _run(self) -> None:
+    def _run(self):
         while not self._stop_event.is_set():
             cap = None
             try:
-                logger.info(
-                    "Connecting to RTSP stream for camera %d (%s)…",
-                    self.camera_id,
-                    self.name,
-                )
+                logger.info("Connecting to RTSP stream: %s", self.rtsp_url)
                 cap = cv2.VideoCapture(self.rtsp_url)
                 if not cap.isOpened():
-                    logger.warning(
-                        "Cannot open RTSP stream for camera %d. Retrying in %ds…",
-                        self.camera_id,
-                        settings.RTSP_RECONNECT_DELAY,
-                    )
+                    logger.error("Failed to open RTSP stream: %s", self.rtsp_url)
                     self._stop_event.wait(settings.RTSP_RECONNECT_DELAY)
                     continue
 
-                logger.info("Connected to camera %d (%s)", self.camera_id, self.name)
+                logger.info("Connected to RTSP stream: %s", self.camera_name)
 
                 while not self._stop_event.is_set():
                     ret, frame = cap.read()
                     if not ret:
-                        logger.warning(
-                            "Lost connection to camera %d. Reconnecting…",
-                            self.camera_id,
-                        )
+                        logger.warning("Lost connection to camera: %s", self.camera_name)
                         break
 
-                    self.last_frame_at = datetime.datetime.utcnow()
                     self._process_frame(frame)
-
-                    # Wait for the configured interval (interruptible)
                     self._stop_event.wait(settings.RTSP_FRAME_INTERVAL)
 
-            except Exception:
-                logger.exception(
-                    "Unexpected error in worker for camera %d", self.camera_id
-                )
+            except Exception as e:
+                logger.error("Error in RTSP worker for %s: %s", self.camera_name, e)
             finally:
                 if cap is not None:
                     cap.release()
 
-            # Delay before reconnect attempt
             if not self._stop_event.is_set():
+                logger.info("Reconnecting to camera %s in %ss...", self.camera_name, settings.RTSP_RECONNECT_DELAY)
                 self._stop_event.wait(settings.RTSP_RECONNECT_DELAY)
 
-    def _process_frame(self, frame: np.ndarray) -> None:
-        """Detect faces in *frame* and match against known employees."""
-        # Convert BGR (OpenCV) to RGB (face_recognition)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Detect face locations & encodings
-        face_locations = face_recognition.face_locations(rgb_frame, model="hog")
-        if not face_locations:
-            return
-
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-        known = _get_encodings()
-        if not known:
-            return
-
-        known_encs = [k[4] for k in known]
-
-        for face_enc in face_encodings:
-            distances = face_recognition.face_distance(known_encs, face_enc)
-            best_idx = int(np.argmin(distances))
-            best_distance = float(distances[best_idx])
-
-            if best_distance > settings.FACE_RECOGNITION_TOLERANCE:
-                logger.debug(
-                    "Unrecognized face on camera %d (best distance=%.3f)",
-                    self.camera_id,
-                    best_distance,
-                )
-                continue
-
-            emp_id, emp_code, emp_name, emp_dept, _ = known[best_idx]
-            confidence = round(1.0 - best_distance, 4)
-
-            # Cooldown check
-            now = datetime.datetime.utcnow()
-            last_seen = self._cooldowns.get(emp_id)
-            if last_seen is not None:
-                elapsed = (now - last_seen).total_seconds()
-                if elapsed < settings.RTSP_COOLDOWN_MINUTES * 60:
-                    continue
-
-            self._cooldowns[emp_id] = now
-            logger.info(
-                "Recognized %s (employee=%s) on camera %d with confidence %.4f",
-                emp_name,
-                emp_code,
-                self.camera_id,
-                confidence,
-            )
-
-            self._record_attendance(emp_id, emp_code, emp_name, confidence, now)
-
-            # Store for live feed
-            _add_detection(
-                {
-                    "employee_name": emp_name,
-                    "employee_id": emp_code,
-                    "camera_name": self.name,
-                    "camera_location": self.location,
-                    "direction": self.direction,
-                    "confidence": confidence,
-                    "detected_at": now,
-                }
-            )
-
-    def _record_attendance(
-        self,
-        emp_db_id: int,
-        emp_code: str,
-        emp_name: str,
-        confidence: float,
-        now: datetime.datetime,
-    ) -> None:
-        """Create or update an attendance record based on camera direction."""
-        db: Session = SessionLocal()
+    def _process_frame(self, frame: np.ndarray):
+        """Detect faces in frame and record attendance."""
         try:
-            today = now.date()
+            detections = face_engine.extract_embedding_from_frame(frame)
+        except Exception as e:
+            logger.error("Face detection error on camera %s: %s", self.camera_name, e)
+            return
+
+        if not detections:
+            return
+
+        db = SessionLocal()
+        try:
+            for bbox, embedding in detections:
+                self._match_and_record(db, embedding)
+        finally:
+            db.close()
+
+    def _match_and_record(self, db, embedding: np.ndarray):
+        """Match embedding against enrolled students using pgvector nearest neighbor."""
+        embedding_list = embedding.tolist()
+        result = db.execute(
+            text(
+                "SELECT id, student_id, name, 1 - (face_embedding <=> CAST(:query AS vector)) AS similarity "
+                "FROM students "
+                "WHERE is_active = true AND face_embedding IS NOT NULL "
+                "ORDER BY face_embedding <=> CAST(:query AS vector) "
+                "LIMIT 1"
+            ),
+            {"query": str(embedding_list)},
+        ).fetchone()
+
+        if result is None:
+            return
+
+        student_db_id, student_code, student_name, similarity = result
+
+        if similarity < settings.FACE_RECOGNITION_TOLERANCE:
+            return
+
+        if self._is_on_cooldown(student_db_id):
+            return
+
+        now = datetime.now(timezone.utc)
+        today = date.today()
+
+        if self.direction == "entry":
+            # Check-in: create a new attendance record if none exists today
             existing = (
                 db.query(AttendanceRecord)
                 .filter(
-                    AttendanceRecord.employee_id == emp_db_id,
+                    AttendanceRecord.student_id == student_db_id,
                     AttendanceRecord.date == today,
                 )
                 .first()
             )
-
-            if self.direction == CameraDirection.entry.value:
-                if existing:
-                    logger.debug(
-                        "%s already has attendance record for today (entry camera)",
-                        emp_name,
-                    )
-                    return
-
-                status_val = AttendanceStatus.present
-                if now.hour >= 9:
-                    status_val = AttendanceStatus.late
+            if existing is None:
+                # Determine if late
+                school_start = datetime.strptime(settings.SCHOOL_START_TIME, "%H:%M").time()
+                late_threshold = (
+                    datetime.combine(today, school_start) + timedelta(minutes=settings.LATE_THRESHOLD_MINUTES)
+                ).time()
+                current_time = now.time()
+                status = AttendanceStatus.late if current_time > late_threshold else AttendanceStatus.present
 
                 record = AttendanceRecord(
-                    employee_id=emp_db_id,
+                    student_id=student_db_id,
                     check_in=now,
                     date=today,
-                    status=status_val,
-                    method=CheckMethod.rtsp_auto,
-                    confidence=confidence,
+                    status=status,
+                    method=AttendanceMethod.rtsp_auto,
+                    confidence=round(similarity, 4),
+                    camera_name=self.camera_name,
                 )
                 db.add(record)
                 db.commit()
-                logger.info("Auto check-in recorded for %s", emp_name)
+                logger.info(
+                    "RTSP check-in: %s (%s) via %s [confidence=%.3f, status=%s]",
+                    student_name, student_code, self.camera_name, similarity, status.value,
+                )
 
-            else:  # exit
-                if not existing:
-                    logger.debug(
-                        "%s has no check-in today, ignoring exit detection",
-                        emp_name,
-                    )
-                    return
-                if existing.check_out is not None:
-                    logger.debug(
-                        "%s already checked out today", emp_name
-                    )
-                    return
-
+        elif self.direction == "exit":
+            # Check-out: update the latest record for today
+            existing = (
+                db.query(AttendanceRecord)
+                .filter(
+                    AttendanceRecord.student_id == student_db_id,
+                    AttendanceRecord.date == today,
+                )
+                .order_by(AttendanceRecord.created_at.desc())
+                .first()
+            )
+            if existing and existing.check_out is None:
                 existing.check_out = now
-                # Mark half-day if worked less than 4 hours
-                if existing.check_in:
-                    duration = (now - existing.check_in).total_seconds() / 3600
-                    if duration < 4:
-                        existing.status = AttendanceStatus.half_day
-
                 db.commit()
-                logger.info("Auto check-out recorded for %s", emp_name)
+                logger.info(
+                    "RTSP check-out: %s (%s) via %s [confidence=%.3f]",
+                    student_name, student_code, self.camera_name, similarity,
+                )
 
-        except Exception:
-            db.rollback()
-            logger.exception("Failed to record attendance for %s", emp_name)
+        self._last_attendance[student_db_id] = now
+
+        # Add to recent detections buffer
+        detection = RecentDetection(
+            student_name=student_name,
+            student_id=student_code,
+            camera_name=self.camera_name,
+            confidence=similarity,
+            timestamp=now,
+        )
+        rtsp_manager.add_detection(detection)
+
+
+class RTSPManager:
+    """Manages all camera workers."""
+
+    def __init__(self):
+        self._workers: dict[int, CameraWorker] = {}
+        self._recent_detections: deque[RecentDetection] = deque(maxlen=200)
+        self._lock = threading.Lock()
+
+    def start_camera(self, camera_id: int, camera_name: str, rtsp_url: str, direction: str):
+        with self._lock:
+            if camera_id in self._workers:
+                self._workers[camera_id].stop()
+            worker = CameraWorker(camera_id, camera_name, rtsp_url, direction)
+            self._workers[camera_id] = worker
+            worker.start()
+
+    def stop_camera(self, camera_id: int):
+        with self._lock:
+            worker = self._workers.pop(camera_id, None)
+            if worker:
+                worker.stop()
+
+    def stop_all(self):
+        with self._lock:
+            for worker in self._workers.values():
+                worker.stop()
+            self._workers.clear()
+
+    def is_running(self, camera_id: int) -> bool:
+        with self._lock:
+            worker = self._workers.get(camera_id)
+            return worker is not None and worker._thread is not None and worker._thread.is_alive()
+
+    def add_detection(self, detection: RecentDetection):
+        self._recent_detections.append(detection)
+
+    def get_recent_detections(self, minutes: int = 5) -> list[dict]:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        return [
+            d.to_dict()
+            for d in self._recent_detections
+            if d.timestamp > cutoff
+        ]
+
+    def start_active_cameras(self):
+        """Start workers for all active cameras in the database."""
+        db = SessionLocal()
+        try:
+            cameras = db.query(Camera).filter(Camera.is_active == True).all()
+            for cam in cameras:
+                self.start_camera(cam.id, cam.name, cam.rtsp_url, cam.direction.value)
+            logger.info("Started %d active camera workers", len(cameras))
         finally:
             db.close()
 
 
-# ---------------------------------------------------------------------------
-# Public helpers for managing workers
-# ---------------------------------------------------------------------------
-
-
-def start_camera_worker(camera: Camera) -> None:
-    """Create and start a worker for the given camera."""
-    with _workers_lock:
-        if camera.id in _workers and _workers[camera.id].is_running:
-            return
-        worker = CameraWorker(
-            camera_id=camera.id,
-            name=camera.name,
-            rtsp_url=camera.rtsp_url,
-            direction=camera.direction.value if hasattr(camera.direction, "value") else camera.direction,
-            location=camera.location,
-        )
-        _workers[camera.id] = worker
-        worker.start()
-
-
-def stop_camera_worker(camera_id: int) -> None:
-    """Stop the worker for the given camera id."""
-    with _workers_lock:
-        worker = _workers.pop(camera_id, None)
-    if worker:
-        worker.stop()
-
-
-def stop_all_workers() -> None:
-    """Stop every running camera worker."""
-    with _workers_lock:
-        ids = list(_workers.keys())
-    for cid in ids:
-        stop_camera_worker(cid)
-
-
-def start_all_active_cameras() -> None:
-    """Start workers for every active camera in the database."""
-    _reload_encodings()
-    db: Session = SessionLocal()
-    try:
-        cameras = db.query(Camera).filter(Camera.is_active.is_(True)).all()
-        for cam in cameras:
-            start_camera_worker(cam)
-        logger.info("Started workers for %d active cameras", len(cameras))
-    finally:
-        db.close()
-
-
-def get_worker_status() -> Dict[int, dict]:
-    """Return status information for all registered workers."""
-    with _workers_lock:
-        result = {}
-        for cid, w in _workers.items():
-            result[cid] = {
-                "is_running": w.is_running,
-                "last_frame_at": w.last_frame_at,
-            }
-        return result
-
-
-def test_rtsp_connection(rtsp_url: str, timeout: int = 10) -> Tuple[bool, str]:
-    """Try to open an RTSP stream and read one frame. Returns (success, message)."""
-    cap = None
-    try:
-        cap = cv2.VideoCapture(rtsp_url)
-        if not cap.isOpened():
-            return False, "Could not open RTSP stream"
-        ret, _ = cap.read()
-        if not ret:
-            return False, "Connected but could not read a frame"
-        return True, "RTSP connection successful"
-    except Exception as exc:
-        return False, f"Error: {exc}"
-    finally:
-        if cap is not None:
-            cap.release()
+# Global singleton
+rtsp_manager = RTSPManager()
