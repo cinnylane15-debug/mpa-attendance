@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 import ssl
 
-API_URL = "http://72.255.61.75:4433"
+API_URL = "https://72.255.61.75:4433"
 USERNAME = "admin"
 PASSWORD = "vdIwqkLoeMNhF4TP7Lwq"
 
