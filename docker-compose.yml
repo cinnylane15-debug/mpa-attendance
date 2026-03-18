@@ -44,7 +44,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-MpaRedis2026x}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       UPLOAD_DIR: /app/uploads
-      INSIGHTFACE_MODEL: buffalo_sc
+      INSIGHTFACE_MODEL: buffalo_l
     volumes:
       - uploads:/app/uploads
       - insightface_models:/root/.insightface
