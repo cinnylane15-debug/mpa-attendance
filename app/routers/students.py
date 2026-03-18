@@ -10,7 +10,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.face_engine import face_engine
-from app.models import Student, User, Class
+from app.models import Student, User, Class, UnknownFace
 from app.schemas import StudentCreate, StudentResponse, StudentUpdate
 
 router = APIRouter(prefix="/api/students", tags=["Students"])
@@ -125,6 +125,16 @@ def delete_student(
     student = db.query(Student).filter(Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
+    # Nullify unknown_faces references to avoid FK constraint errors
+    db.query(UnknownFace).filter(
+        UnknownFace.best_match_student_id == student.id
+    ).update({UnknownFace.best_match_student_id: None})
+    db.query(UnknownFace).filter(
+        UnknownFace.assigned_student_id == student.id
+    ).update({UnknownFace.assigned_student_id: None})
+    # Delete photo file if exists
+    if student.photo_path and os.path.exists(student.photo_path):
+        os.remove(student.photo_path)
     db.delete(student)
     db.commit()
 
