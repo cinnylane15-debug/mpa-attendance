@@ -13,6 +13,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
@@ -27,6 +28,7 @@ const menuItems = [
   { key: '/cameras', icon: <CameraOutlined />, label: 'Cameras' },
   { key: '/schedules', icon: <ScheduleOutlined />, label: 'Schedules' },
   { key: '/holidays', icon: <CalendarOutlined />, label: 'Holidays' },
+  { key: '/unknown-faces', icon: <QuestionCircleOutlined />, label: 'Unknown Faces' },
 ];
 
 export default function AppLayout() {

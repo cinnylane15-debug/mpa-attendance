@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Table, Button, Modal, Form, Input, Select, Tag, Upload, message, Space, Typography, Popconfirm, Image,
+  Table, Button, Modal, Form, Input, Select, Tag, Upload, message, Space, Typography, Popconfirm, Image, Badge, List,
 } from 'antd';
 import {
-  PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined, SearchOutlined, CameraOutlined,
+  PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined, SearchOutlined, CameraOutlined, PictureOutlined,
 } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut, apiDelete, apiPostFile } from '../api';
 
@@ -19,6 +19,12 @@ export default function Students() {
   const [filterClass, setFilterClass] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [form] = Form.useForm();
+
+  // Photo management modal
+  const [photosModalOpen, setPhotosModalOpen] = useState(false);
+  const [photosStudent, setPhotosStudent] = useState(null);
+  const [photos, setPhotos] = useState([]);
+  const [photosLoading, setPhotosLoading] = useState(false);
 
   const fetchStudents = async () => {
     setLoading(true);
@@ -107,10 +113,44 @@ export default function Students() {
       await apiPostFile(`/students/${studentId}/photo`, formData);
       message.success('Photo uploaded successfully');
       fetchStudents();
+      // If photos modal is open for this student, refresh photos
+      if (photosStudent && photosStudent.id === studentId) {
+        fetchPhotos(studentId);
+      }
     } catch (err) {
       message.error(err.message || 'Failed to upload photo');
     }
     return false;
+  };
+
+  const fetchPhotos = async (studentId) => {
+    setPhotosLoading(true);
+    try {
+      const data = await apiGet(`/students/${studentId}/photos`);
+      setPhotos(Array.isArray(data) ? data : []);
+    } catch (err) {
+      message.error('Failed to load photos');
+    } finally {
+      setPhotosLoading(false);
+    }
+  };
+
+  const openPhotosModal = (record) => {
+    setPhotosStudent(record);
+    setPhotosModalOpen(true);
+    fetchPhotos(record.id);
+  };
+
+  const handleDeletePhoto = async (photoId) => {
+    if (!photosStudent) return;
+    try {
+      await apiDelete(`/students/${photosStudent.id}/photos/${photoId}`);
+      message.success('Photo deleted');
+      fetchPhotos(photosStudent.id);
+      fetchStudents();
+    } catch (err) {
+      message.error(err.message || 'Failed to delete photo');
+    }
   };
 
   const columns = [
@@ -127,7 +167,7 @@ export default function Students() {
       width: 70,
       render: (photo) => photo ? (
         <Image
-          src={`/api/uploads/${photo}`}
+          src={`/uploads/${photo}`}
           width={40}
           height={40}
           style={{ borderRadius: '50%', objectFit: 'cover' }}
@@ -170,8 +210,12 @@ export default function Students() {
       title: 'Face',
       dataIndex: 'has_face_embedding',
       key: 'face',
-      width: 80,
-      render: (has) => has ? <Tag color="green">Ready</Tag> : <Tag color="default">None</Tag>,
+      width: 100,
+      render: (has, record) => has ? (
+        <Tag color="green" style={{ cursor: 'pointer' }} onClick={() => openPhotosModal(record)}>
+          Ready ({record.photo_count || 1})
+        </Tag>
+      ) : <Tag color="default">None</Tag>,
     },
     {
       title: 'Status',
@@ -187,7 +231,7 @@ export default function Students() {
     {
       title: 'Actions',
       key: 'actions',
-      width: 180,
+      width: 220,
       render: (_, record) => (
         <Space>
           <Upload
@@ -197,6 +241,12 @@ export default function Students() {
           >
             <Button icon={<UploadOutlined />} size="small" title="Upload Photo" />
           </Upload>
+          <Button
+            icon={<PictureOutlined />}
+            size="small"
+            onClick={() => openPhotosModal(record)}
+            title="Manage Photos"
+          />
           <Button
             icon={<EditOutlined />}
             size="small"
@@ -299,6 +349,63 @@ export default function Students() {
             </Form.Item>
           )}
         </Form>
+      </Modal>
+
+      {/* Photos Management Modal */}
+      <Modal
+        title={`Photos: ${photosStudent?.name || ''}`}
+        open={photosModalOpen}
+        onCancel={() => { setPhotosModalOpen(false); setPhotosStudent(null); setPhotos([]); }}
+        footer={[
+          <Upload
+            key="upload"
+            showUploadList={false}
+            beforeUpload={(file) => photosStudent && handlePhotoUpload(photosStudent.id, file)}
+            accept="image/*"
+          >
+            <Button type="primary" icon={<UploadOutlined />}>Add Photo</Button>
+          </Upload>,
+        ]}
+        width={600}
+      >
+        {photos.length === 0 && !photosLoading ? (
+          <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+            <CameraOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+            <p>No photos uploaded yet. Add photos for better face recognition accuracy.</p>
+          </div>
+        ) : (
+          <List
+            loading={photosLoading}
+            grid={{ gutter: 16, column: 3 }}
+            dataSource={photos}
+            renderItem={(photo) => (
+              <List.Item>
+                <div style={{ position: 'relative', textAlign: 'center' }}>
+                  <Image
+                    src={`/uploads/${photo.photo_path}`}
+                    width={150}
+                    height={150}
+                    style={{ objectFit: 'cover', borderRadius: 8 }}
+                    fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAI8wNPvd7POQAAAABJRU5ErkJggg=="
+                  />
+                  <div style={{ marginTop: 4 }}>
+                    <Popconfirm
+                      title="Delete this photo?"
+                      onConfirm={() => handleDeletePhoto(photo.id)}
+                      okText="Yes"
+                      cancelText="No"
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />}>Remove</Button>
+                    </Popconfirm>
+                  </div>
+                </div>
+              </List.Item>
+            )}
+          />
+        )}
+        <div style={{ marginTop: 12, color: '#888', fontSize: 12 }}>
+          Upload multiple photos from different angles for better recognition accuracy.
+        </div>
       </Modal>
     </div>
   );

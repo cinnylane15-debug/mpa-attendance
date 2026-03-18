@@ -13,6 +13,12 @@ function authHeaders() {
   return headers;
 }
 
+function normalizePath(path) {
+  const [pathname, query] = path.split('?');
+  let normalized = pathname.endsWith('/') || pathname.includes('.') ? pathname : pathname + '/';
+  return query ? `${normalized}?${query}` : normalized;
+}
+
 async function handleResponse(response) {
   if (response.status === 401) {
     localStorage.removeItem('token');
@@ -31,14 +37,14 @@ async function handleResponse(response) {
 }
 
 export async function apiGet(path) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     headers: authHeaders(),
   });
   return handleResponse(response);
 }
 
 export async function apiPost(path, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -50,7 +56,7 @@ export async function apiPost(path, body) {
 }
 
 export async function apiPut(path, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -62,7 +68,7 @@ export async function apiPut(path, body) {
 }
 
 export async function apiDelete(path) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
@@ -70,7 +76,7 @@ export async function apiDelete(path) {
 }
 
 export async function apiPostFile(path, formData) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     method: 'POST',
     headers: authHeaders(),
     body: formData,
@@ -79,7 +85,7 @@ export async function apiPostFile(path, formData) {
 }
 
 export async function apiGetBlob(path) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${normalizePath(path)}`, {
     headers: authHeaders(),
   });
   if (response.status === 401) {

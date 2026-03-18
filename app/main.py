@@ -78,6 +78,7 @@ from app.routers.cameras import router as cameras_router
 from app.routers.schedules import router as schedules_router
 from app.routers.holidays import router as holidays_router
 from app.routers.dashboard import router as dashboard_router
+from app.routers.unknown_faces import router as unknown_faces_router
 
 app.include_router(auth_router)
 app.include_router(students_router)
@@ -87,6 +88,7 @@ app.include_router(cameras_router)
 app.include_router(schedules_router)
 app.include_router(holidays_router)
 app.include_router(dashboard_router)
+app.include_router(unknown_faces_router)
 
 
 @app.get("/")

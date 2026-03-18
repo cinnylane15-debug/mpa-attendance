@@ -30,6 +30,11 @@ class CameraDirection(str, enum.Enum):
     exit = "exit"
 
 
+class CaptureMode(str, enum.Enum):
+    snapshot = "snapshot"
+    rtsp = "rtsp"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -74,6 +79,19 @@ class Student(Base):
 
     student_class = relationship("Class", back_populates="students")
     attendance_records = relationship("AttendanceRecord", back_populates="student", cascade="all, delete-orphan")
+    photos = relationship("StudentPhoto", back_populates="student", cascade="all, delete-orphan", order_by="StudentPhoto.created_at.desc()")
+
+
+class StudentPhoto(Base):
+    __tablename__ = "student_photos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    photo_path = Column(String(500), nullable=False)
+    face_embedding = Column(Vector(512), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    student = relationship("Student", back_populates="photos")
 
 
 class AttendanceRecord(Base):
@@ -88,9 +106,28 @@ class AttendanceRecord(Base):
     method = Column(SAEnum(AttendanceMethod), default=AttendanceMethod.manual, nullable=False)
     confidence = Column(Float, nullable=True)
     camera_name = Column(String(200), nullable=True)
+    check_in_photo = Column(String(500), nullable=True)
+    check_out_photo = Column(String(500), nullable=True)
+    check_out_confidence = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     student = relationship("Student", back_populates="attendance_records")
+    detection_logs = relationship("DetectionLog", back_populates="attendance_record", cascade="all, delete-orphan", order_by="DetectionLog.detected_at")
+
+
+class DetectionLog(Base):
+    __tablename__ = "detection_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attendance_record_id = Column(Integer, ForeignKey("attendance_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    photo_path = Column(String(500), nullable=False)
+    confidence = Column(Float, nullable=True)
+    camera_name = Column(String(200), nullable=True)
+    detected_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    attendance_record = relationship("AttendanceRecord", back_populates="detection_logs")
+    student = relationship("Student")
 
 
 class Camera(Base):
@@ -102,6 +139,8 @@ class Camera(Base):
     rtsp_url = Column(String(500), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     direction = Column(SAEnum(CameraDirection), default=CameraDirection.entry, nullable=False)
+    capture_mode = Column(SAEnum(CaptureMode), default=CaptureMode.snapshot, nullable=False, server_default="snapshot")
+    snapshot_url = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -116,6 +155,26 @@ class Schedule(Base):
     is_active = Column(Boolean, default=True, nullable=False)
 
     schedule_class = relationship("Class", back_populates="schedules")
+
+
+class UnknownFace(Base):
+    __tablename__ = "unknown_faces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    face_image_path = Column(String(500), nullable=False)
+    face_embedding = Column(Vector(512), nullable=True)
+    confidence = Column(Float, nullable=True)  # best match confidence (if any)
+    best_match_student_id = Column(Integer, ForeignKey("students.id"), nullable=True)
+    camera_name = Column(String(200), nullable=True)
+    assigned_student_id = Column(Integer, ForeignKey("students.id"), nullable=True)  # manually assigned
+    is_resolved = Column(Boolean, default=False, nullable=False)
+    sighting_count = Column(Integer, default=1, nullable=False)  # how many times this face was seen
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())  # last time this face appeared
+    captured_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    best_match = relationship("Student", foreign_keys=[best_match_student_id])
+    assigned_student = relationship("Student", foreign_keys=[assigned_student_id])
 
 
 class Holiday(Base):

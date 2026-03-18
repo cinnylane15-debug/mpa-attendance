@@ -6,17 +6,37 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin
 from app.config import settings
 from app.database import get_db
 from app.face_engine import face_engine
-from app.models import Student, User, Class
-from app.schemas import StudentCreate, StudentResponse, StudentUpdate
+from app.models import Student, StudentPhoto, User, Class, UnknownFace
+from app.schemas import StudentCreate, StudentResponse, StudentUpdate, StudentPhotoResponse
 
 router = APIRouter(prefix="/api/students", tags=["Students"])
 
 
+def _relative_upload_path(full_path: str) -> str:
+    """Convert a full server path to a path relative to the uploads root.
+
+    e.g. /app/uploads/unknown_faces/foo.jpg -> unknown_faces/foo.jpg
+         uploads/photos/bar.jpg -> photos/bar.jpg
+         /app/uploads/photos/baz.jpg -> photos/baz.jpg
+    """
+    if not full_path:
+        return full_path
+    # Find 'uploads/' in the path and return everything after it
+    idx = full_path.find("uploads/")
+    if idx >= 0:
+        return full_path[idx + len("uploads/"):]
+    return os.path.basename(full_path)
+
+
 def _student_to_response(student: Student) -> StudentResponse:
+    # Return relative path from uploads root
+    photo = student.photo_path
+    if photo:
+        photo = _relative_upload_path(photo)
     return StudentResponse(
         id=student.id,
         student_id=student.student_id,
@@ -25,8 +45,9 @@ def _student_to_response(student: Student) -> StudentResponse:
         class_name=student.student_class.name if student.student_class else None,
         guardian_name=student.guardian_name,
         guardian_phone=student.guardian_phone,
-        photo_path=student.photo_path,
-        has_face_embedding=student.face_embedding is not None,
+        photo_path=photo,
+        has_face_embedding=len(student.photos) > 0 or student.face_embedding is not None,
+        photo_count=len(student.photos),
         is_active=student.is_active,
         created_at=student.created_at,
     )
@@ -56,15 +77,20 @@ def create_student(
 def list_students(
     class_id: Optional[int] = Query(None),
     is_active: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List students with optional class filter."""
+    """List students with optional class and search filters."""
     query = db.query(Student)
     if class_id is not None:
         query = query.filter(Student.class_id == class_id)
     if is_active is not None:
         query = query.filter(Student.is_active == is_active)
+    if search:
+        query = query.filter(
+            (Student.name.ilike(f"%{search}%")) | (Student.student_id.ilike(f"%{search}%"))
+        )
     students = query.order_by(Student.name).all()
     return [_student_to_response(s) for s in students]
 
@@ -116,6 +142,25 @@ def delete_student(
     student = db.query(Student).filter(Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
+    # Nullify unknown_faces references to avoid FK constraint errors
+    db.query(UnknownFace).filter(
+        UnknownFace.best_match_student_id == student.id
+    ).update({UnknownFace.best_match_student_id: None})
+    db.query(UnknownFace).filter(
+        UnknownFace.assigned_student_id == student.id
+    ).update({UnknownFace.assigned_student_id: None})
+    # Delete all photo files
+    for photo in student.photos:
+        if os.path.exists(photo.photo_path):
+            try:
+                os.remove(photo.photo_path)
+            except OSError:
+                pass
+    if student.photo_path and os.path.exists(student.photo_path):
+        try:
+            os.remove(student.photo_path)
+        except OSError:
+            pass
     db.delete(student)
     db.commit()
 
@@ -157,15 +202,134 @@ def upload_photo(
         os.remove(filepath)
         raise HTTPException(status_code=400, detail="No face detected in the uploaded image")
 
-    # Remove old photo if exists
-    if student.photo_path and os.path.exists(student.photo_path):
-        try:
-            os.remove(student.photo_path)
-        except OSError:
-            pass
+    embedding_list = embedding.tolist()
 
+    # Add to student_photos table
+    photo = StudentPhoto(
+        student_id=student.id,
+        photo_path=filepath,
+        face_embedding=embedding_list,
+    )
+    db.add(photo)
+
+    # Update student's primary display photo and embedding to the latest
     student.photo_path = filepath
-    student.face_embedding = embedding.tolist()
+    student.face_embedding = embedding_list
     db.commit()
     db.refresh(student)
     return _student_to_response(student)
+
+
+@router.get("/{student_id}/photos", response_model=list[StudentPhotoResponse])
+def list_photos(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all photos for a student."""
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    return [
+        StudentPhotoResponse(
+            id=p.id,
+            photo_path=_relative_upload_path(p.photo_path),
+            created_at=p.created_at,
+        )
+        for p in student.photos
+    ]
+
+
+@router.delete("/{student_id}/photos/{photo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_photo(
+    student_id: int,
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a specific photo from a student."""
+    photo = db.query(StudentPhoto).filter(
+        StudentPhoto.id == photo_id,
+        StudentPhoto.student_id == student_id,
+    ).first()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    # Delete file
+    if os.path.exists(photo.photo_path):
+        try:
+            os.remove(photo.photo_path)
+        except OSError:
+            pass
+
+    db.delete(photo)
+    db.flush()
+
+    # Update student's primary photo to the next available
+    student = db.query(Student).filter(Student.id == student_id).first()
+    remaining = db.query(StudentPhoto).filter(
+        StudentPhoto.student_id == student_id
+    ).order_by(StudentPhoto.created_at.desc()).first()
+
+    if remaining:
+        student.photo_path = remaining.photo_path
+        student.face_embedding = remaining.face_embedding
+    else:
+        student.photo_path = None
+        student.face_embedding = None
+
+    db.commit()
+
+
+@router.post("/re-enroll", status_code=200)
+def re_enroll_all(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Re-extract face embeddings for all student photos using the current model.
+
+    Use after switching InsightFace models to update all embeddings.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    photos = db.query(StudentPhoto).all()
+    updated = 0
+    failed = 0
+
+    for photo in photos:
+        if not os.path.exists(photo.photo_path):
+            log.warning("Photo file missing: %s", photo.photo_path)
+            failed += 1
+            continue
+        try:
+            embedding = face_engine.extract_embedding(photo.photo_path)
+            if embedding is not None:
+                photo.face_embedding = embedding.tolist()
+                updated += 1
+            else:
+                log.warning("No face detected in: %s", photo.photo_path)
+                failed += 1
+        except Exception as e:
+            log.error("Re-enroll error for %s: %s", photo.photo_path, e)
+            failed += 1
+
+    # Also update each student's primary embedding from their latest photo
+    students = db.query(Student).filter(Student.face_embedding.isnot(None)).all()
+    for student in students:
+        latest = db.query(StudentPhoto).filter(
+            StudentPhoto.student_id == student.id
+        ).order_by(StudentPhoto.created_at.desc()).first()
+        if latest:
+            student.face_embedding = latest.face_embedding
+        elif student.photo_path and os.path.exists(student.photo_path):
+            try:
+                embedding = face_engine.extract_embedding(student.photo_path)
+                if embedding is not None:
+                    student.face_embedding = embedding.tolist()
+                    updated += 1
+            except Exception:
+                failed += 1
+
+    db.commit()
+    return {"updated": updated, "failed": failed, "total": len(photos)}

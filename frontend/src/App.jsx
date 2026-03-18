@@ -10,6 +10,7 @@ import Attendance from './pages/Attendance';
 import Cameras from './pages/Cameras';
 import Schedules from './pages/Schedules';
 import Holidays from './pages/Holidays';
+import UnknownFaces from './pages/UnknownFaces';
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/cameras" element={<Cameras />} />
         <Route path="/schedules" element={<Schedules />} />
         <Route path="/holidays" element={<Holidays />} />
+        <Route path="/unknown-faces" element={<UnknownFaces />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

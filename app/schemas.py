@@ -78,6 +78,14 @@ class StudentUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class StudentPhotoResponse(BaseModel):
+    id: int
+    photo_path: str
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 class StudentResponse(BaseModel):
     id: int
     student_id: str
@@ -88,6 +96,7 @@ class StudentResponse(BaseModel):
     guardian_phone: Optional[str] = None
     photo_path: Optional[str] = None
     has_face_embedding: bool = False
+    photo_count: int = 0
     is_active: bool = True
     created_at: Optional[datetime] = None
 
@@ -117,7 +126,24 @@ class AttendanceResponse(BaseModel):
     method: str
     confidence: Optional[float] = None
     camera_name: Optional[str] = None
+    check_in_photo: Optional[str] = None
+    check_out_photo: Optional[str] = None
+    check_out_confidence: Optional[float] = None
     created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class DetectionLogResponse(BaseModel):
+    id: int
+    attendance_record_id: int
+    student_id: int
+    student_name: Optional[str] = None
+    student_code: Optional[str] = None
+    photo_path: str
+    confidence: Optional[float] = None
+    camera_name: Optional[str] = None
+    detected_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -138,6 +164,8 @@ class CameraCreate(BaseModel):
     rtsp_url: str
     is_active: bool = True
     direction: str = "entry"
+    capture_mode: str = "snapshot"
+    snapshot_url: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -146,6 +174,8 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     is_active: Optional[bool] = None
     direction: Optional[str] = None
+    capture_mode: Optional[str] = None
+    snapshot_url: Optional[str] = None
 
 
 class CameraResponse(BaseModel):
@@ -155,6 +185,8 @@ class CameraResponse(BaseModel):
     rtsp_url: str
     is_active: bool
     direction: str
+    capture_mode: str = "snapshot"
+    snapshot_url: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
@@ -238,6 +270,38 @@ class ClassStats(BaseModel):
     absent_today: int
     late_today: int
     attendance_rate: float
+
+
+# ── Unknown Faces ────────────────────────────────────────────────────────
+
+class UnknownFaceResponse(BaseModel):
+    id: int
+    face_image_path: str
+    confidence: Optional[float] = None
+    best_match_student_id: Optional[int] = None
+    best_match_name: Optional[str] = None
+    camera_name: Optional[str] = None
+    assigned_student_id: Optional[int] = None
+    assigned_student_name: Optional[str] = None
+    is_resolved: bool = False
+    sighting_count: int = 1
+    last_seen_at: Optional[datetime] = None
+    captured_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AssignUnknownFace(BaseModel):
+    student_id: int
+
+
+class BulkAssignUnknownFaces(BaseModel):
+    ids: list[int]
+    student_id: int
+
+
+class BulkDismissUnknownFaces(BaseModel):
+    ids: list[int]
 
 
 # ── Export ────────────────────────────────────────────────────────────────────
