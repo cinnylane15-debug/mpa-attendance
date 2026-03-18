@@ -217,7 +217,7 @@ def export_attendance(
     wb.save(output)
     output.seek(0)
 
-    filename = f"attendance_{data.start_date}_{data.end_date}.xlsx"
+    filename = f"attendance_{start_date}_{end_date}.xlsx"
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

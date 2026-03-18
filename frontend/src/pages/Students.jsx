@@ -127,7 +127,7 @@ export default function Students() {
       width: 70,
       render: (photo) => photo ? (
         <Image
-          src={`/api/uploads/${photo}`}
+          src={`/uploads/${photo}`}
           width={40}
           height={40}
           style={{ borderRadius: '50%', objectFit: 'cover' }}

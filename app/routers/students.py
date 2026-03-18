@@ -17,6 +17,10 @@ router = APIRouter(prefix="/api/students", tags=["Students"])
 
 
 def _student_to_response(student: Student) -> StudentResponse:
+    # Return just the filename, not the full server path
+    photo = student.photo_path
+    if photo:
+        photo = os.path.basename(photo)
     return StudentResponse(
         id=student.id,
         student_id=student.student_id,
@@ -25,7 +29,7 @@ def _student_to_response(student: Student) -> StudentResponse:
         class_name=student.student_class.name if student.student_class else None,
         guardian_name=student.guardian_name,
         guardian_phone=student.guardian_phone,
-        photo_path=student.photo_path,
+        photo_path=photo,
         has_face_embedding=student.face_embedding is not None,
         is_active=student.is_active,
         created_at=student.created_at,
@@ -56,15 +60,20 @@ def create_student(
 def list_students(
     class_id: Optional[int] = Query(None),
     is_active: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List students with optional class filter."""
+    """List students with optional class and search filters."""
     query = db.query(Student)
     if class_id is not None:
         query = query.filter(Student.class_id == class_id)
     if is_active is not None:
         query = query.filter(Student.is_active == is_active)
+    if search:
+        query = query.filter(
+            (Student.name.ilike(f"%{search}%")) | (Student.student_id.ilike(f"%{search}%"))
+        )
     students = query.order_by(Student.name).all()
     return [_student_to_response(s) for s in students]
 

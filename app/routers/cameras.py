@@ -116,6 +116,32 @@ def delete_camera(
     db.commit()
 
 
+@router.post("/{camera_id}/test")
+def test_camera_connection(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Test RTSP connection for a camera."""
+    import cv2
+
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    try:
+        cap = cv2.VideoCapture(cam.rtsp_url)
+        if not cap.isOpened():
+            return {"success": False, "message": "Could not connect to RTSP stream"}
+        ret, _ = cap.read()
+        cap.release()
+        if ret:
+            return {"success": True, "message": "Connection successful, frame captured"}
+        return {"success": False, "message": "Connected but could not read a frame"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
 @router.post("/{camera_id}/start")
 def start_camera(
     camera_id: int,
