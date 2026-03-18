@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import date, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db
-from app.models import Camera, User
+from app.models import Camera, User, AttendanceRecord, UnknownFace, Student
 from app.rtsp_worker import rtsp_manager
 from app.schemas import CameraCreate, CameraUpdate, CameraResponse
 
@@ -210,3 +212,68 @@ def camera_status(
 
     running = rtsp_manager.is_running(camera_id)
     return {"camera_id": camera_id, "name": cam.name, "is_running": running}
+
+
+@router.get("/{camera_id}/logs")
+def camera_logs(
+    camera_id: int,
+    limit: int = Query(20, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get recent activity for a camera: attendance records and unknown face captures."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Recent attendance from this camera
+    records = (
+        db.query(AttendanceRecord)
+        .filter(AttendanceRecord.camera_name == cam.name)
+        .order_by(AttendanceRecord.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    attendance_logs = []
+    for r in records:
+        student = r.student
+        attendance_logs.append({
+            "type": "attendance",
+            "student_name": student.name if student else None,
+            "student_code": student.student_id if student else None,
+            "status": r.status.value,
+            "confidence": r.confidence,
+            "timestamp": r.check_in.isoformat() if r.check_in else r.created_at.isoformat(),
+        })
+
+    # Recent unknown faces from this camera
+    unknowns = (
+        db.query(UnknownFace)
+        .filter(UnknownFace.camera_name == cam.name)
+        .order_by(UnknownFace.captured_at.desc())
+        .limit(limit)
+        .all()
+    )
+    unknown_logs = []
+    for u in unknowns:
+        unknown_logs.append({
+            "type": "unknown_face",
+            "confidence": u.confidence,
+            "is_resolved": u.is_resolved,
+            "assigned_to": u.assigned_student.name if u.assigned_student else None,
+            "timestamp": u.captured_at.isoformat() if u.captured_at else None,
+        })
+
+    # Merge and sort by timestamp
+    all_logs = attendance_logs + unknown_logs
+    all_logs.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
+
+    # Worker status
+    running = rtsp_manager.is_running(camera_id)
+
+    return {
+        "camera_name": cam.name,
+        "is_running": running,
+        "capture_mode": cam.capture_mode.value if cam.capture_mode else "snapshot",
+        "logs": all_logs[:limit],
+    }
