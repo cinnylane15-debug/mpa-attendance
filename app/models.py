@@ -125,6 +125,24 @@ class Schedule(Base):
     schedule_class = relationship("Class", back_populates="schedules")
 
 
+class UnknownFace(Base):
+    __tablename__ = "unknown_faces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    face_image_path = Column(String(500), nullable=False)
+    face_embedding = Column(Vector(512), nullable=True)
+    confidence = Column(Float, nullable=True)  # best match confidence (if any)
+    best_match_student_id = Column(Integer, ForeignKey("students.id"), nullable=True)
+    camera_name = Column(String(200), nullable=True)
+    assigned_student_id = Column(Integer, ForeignKey("students.id"), nullable=True)  # manually assigned
+    is_resolved = Column(Boolean, default=False, nullable=False)
+    captured_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    best_match = relationship("Student", foreign_keys=[best_match_student_id])
+    assigned_student = relationship("Student", foreign_keys=[assigned_student_id])
+
+
 class Holiday(Base):
     __tablename__ = "holidays"
 

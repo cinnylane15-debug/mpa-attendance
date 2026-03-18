@@ -13,7 +13,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import SessionLocal
 from app.face_engine import face_engine
-from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student
+from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student, UnknownFace
 
 logger = logging.getLogger(__name__)
 
@@ -185,11 +185,48 @@ class CameraWorker:
         db = SessionLocal()
         try:
             for bbox, embedding in detections:
-                self._match_and_record(db, embedding)
+                self._match_and_record(db, embedding, frame, bbox)
         finally:
             db.close()
 
-    def _match_and_record(self, db, embedding: np.ndarray):
+    def _save_unknown_face(self, db, frame: np.ndarray, bbox, embedding: np.ndarray,
+                          confidence: float = None, best_match_id: int = None):
+        """Save an unidentified face crop to disk and database."""
+        import os
+        import uuid
+
+        unknown_dir = os.path.join(settings.UPLOAD_DIR, "unknown_faces")
+        os.makedirs(unknown_dir, exist_ok=True)
+
+        # Crop face from frame
+        x1, y1, x2, y2 = [int(c) for c in bbox[:4]]
+        h, w = frame.shape[:2]
+        # Add padding
+        pad = 30
+        x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+        x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
+        face_crop = frame[y1:y2, x1:x2]
+
+        if face_crop.size == 0:
+            return
+
+        filename = f"unknown_{uuid.uuid4().hex[:12]}.jpg"
+        filepath = os.path.join(unknown_dir, filename)
+        cv2.imwrite(filepath, face_crop)
+
+        unknown = UnknownFace(
+            face_image_path=filepath,
+            face_embedding=embedding.tolist(),
+            confidence=round(confidence, 4) if confidence else None,
+            best_match_student_id=best_match_id,
+            camera_name=self.camera_name,
+        )
+        db.add(unknown)
+        db.commit()
+        logger.info("Saved unknown face from camera %s (confidence=%.3f)",
+                     self.camera_name, confidence or 0)
+
+    def _match_and_record(self, db, embedding: np.ndarray, frame: np.ndarray = None, bbox=None):
         """Match embedding against enrolled students using pgvector nearest neighbor."""
         embedding_list = embedding.tolist()
         result = db.execute(
@@ -204,11 +241,17 @@ class CameraWorker:
         ).fetchone()
 
         if result is None:
+            # No enrolled students with embeddings at all — save as unknown
+            if frame is not None and bbox is not None:
+                self._save_unknown_face(db, frame, bbox, embedding)
             return
 
         student_db_id, student_code, student_name, similarity = result
 
         if similarity < settings.FACE_RECOGNITION_TOLERANCE:
+            # Below threshold — save as unknown with best match info
+            if frame is not None and bbox is not None:
+                self._save_unknown_face(db, frame, bbox, embedding, similarity, student_db_id)
             return
 
         if self._is_on_cooldown(student_db_id):

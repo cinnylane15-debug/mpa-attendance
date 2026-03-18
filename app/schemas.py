@@ -246,6 +246,27 @@ class ClassStats(BaseModel):
     attendance_rate: float
 
 
+# ── Unknown Faces ────────────────────────────────────────────────────────
+
+class UnknownFaceResponse(BaseModel):
+    id: int
+    face_image_path: str
+    confidence: Optional[float] = None
+    best_match_student_id: Optional[int] = None
+    best_match_name: Optional[str] = None
+    camera_name: Optional[str] = None
+    assigned_student_id: Optional[int] = None
+    assigned_student_name: Optional[str] = None
+    is_resolved: bool = False
+    captured_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AssignUnknownFace(BaseModel):
+    student_id: int
+
+
 # ── Export ────────────────────────────────────────────────────────────────────
 
 class ExcelExportRequest(BaseModel):
