@@ -199,6 +199,42 @@ def stop_camera(
     return {"message": f"Camera '{cam.name}' worker stopped"}
 
 
+@router.get("/{camera_id}/snapshot")
+def get_snapshot(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a live snapshot from the camera."""
+    import httpx
+    from fastapi.responses import Response
+    from app.rtsp_worker import derive_snapshot_url
+    from urllib.parse import urlparse
+
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    snapshot_url = cam.snapshot_url or derive_snapshot_url(cam.rtsp_url)
+    if not snapshot_url:
+        raise HTTPException(status_code=400, detail="No snapshot URL available")
+
+    try:
+        parsed = urlparse(snapshot_url)
+        username = parsed.username or ""
+        password = parsed.password or ""
+        clean_url = snapshot_url.replace(f"{username}:{password}@", "")
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(clean_url, auth=httpx.DigestAuth(username, password))
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                return Response(content=resp.content, media_type="image/jpeg")
+            raise HTTPException(status_code=502, detail=f"Camera returned HTTP {resp.status_code}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/{camera_id}/status")
 def camera_status(
     camera_id: int,

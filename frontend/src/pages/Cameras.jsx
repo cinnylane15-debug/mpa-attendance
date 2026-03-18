@@ -6,7 +6,7 @@ import {
 import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined,
   ApiOutlined, CameraOutlined, EnvironmentOutlined, EditOutlined,
-  FileTextOutlined, CheckCircleOutlined, QuestionCircleOutlined,
+  FileTextOutlined, CheckCircleOutlined, QuestionCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut, apiDelete } from '../api';
 import dayjs from 'dayjs';
@@ -27,6 +27,55 @@ function maskRtspUrl(url) {
   }
 }
 
+function LiveSnapshot({ cameraId }) {
+  const [src, setSrc] = React.useState(null);
+  const [error, setError] = React.useState(false);
+  const [refreshKey, setRefreshKey] = React.useState(0);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const token = localStorage.getItem('token');
+    fetch(`/api/cameras/${cameraId}/snapshot/`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error('Failed');
+        return r.blob();
+      })
+      .then((blob) => {
+        if (!cancelled) {
+          setSrc(URL.createObjectURL(blob));
+          setError(false);
+        }
+      })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [cameraId, refreshKey]);
+
+  return (
+    <Card
+      size="small"
+      title="Live View"
+      extra={
+        <Button size="small" icon={<ReloadOutlined />} onClick={() => setRefreshKey((k) => k + 1)}>
+          Refresh
+        </Button>
+      }
+      style={{ marginBottom: 16 }}
+    >
+      {src ? (
+        <img src={src} alt="Live snapshot" style={{ width: '100%', borderRadius: 4 }} />
+      ) : error ? (
+        <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>
+          Could not load snapshot
+        </div>
+      ) : (
+        <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>
+      )}
+    </Card>
+  );
+}
+
 export default function Cameras() {
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -35,6 +84,7 @@ export default function Cameras() {
   const [logsDrawer, setLogsDrawer] = useState(null); // camera id
   const [logs, setLogs] = useState(null);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [snapshotKey, setSnapshotKey] = useState(0);
   const [form] = Form.useForm();
 
   const fetchCameras = async () => {
@@ -339,6 +389,9 @@ export default function Cameras() {
                 <Tag>{logs.capture_mode === 'snapshot' ? 'Snapshot Mode' : 'RTSP Mode'}</Tag>
               </Space>
             </div>
+
+            {/* Live Snapshot */}
+            {logsDrawer && <LiveSnapshot cameraId={logsDrawer.id} />}
             {logs.logs && logs.logs.length > 0 ? (
               <Timeline
                 items={logs.logs.map((log, i) => ({
