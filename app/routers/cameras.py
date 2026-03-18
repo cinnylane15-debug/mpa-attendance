@@ -156,7 +156,7 @@ def test_camera_connection(
             username = parsed.username or ""
             password = parsed.password or ""
             clean_url = snapshot_url.replace(f"{username}:{password}@", "")
-            with httpx.Client(timeout=10) as client:
+            with httpx.Client(timeout=10, verify=False) as client:
                 resp = client.get(clean_url, auth=httpx.DigestAuth(username, password))
                 if resp.status_code == 200 and len(resp.content) > 1000:
                     return {"success": True, "message": f"Snapshot OK ({len(resp.content)} bytes)"}
@@ -233,7 +233,7 @@ def get_snapshot(
         username = parsed.username or ""
         password = parsed.password or ""
         clean_url = snapshot_url.replace(f"{username}:{password}@", "")
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=10, verify=False) as client:
             resp = client.get(clean_url, auth=httpx.DigestAuth(username, password))
             if resp.status_code == 200 and len(resp.content) > 1000:
                 return Response(content=resp.content, media_type="image/jpeg")

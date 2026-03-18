@@ -120,7 +120,7 @@ class CameraWorker:
 
         while not self._stop_event.is_set():
             try:
-                with httpx.Client(timeout=10) as client:
+                with httpx.Client(timeout=10, verify=False) as client:
                     auth = httpx.DigestAuth(username, password)
                     resp = client.get(clean_url, auth=auth)
                     if resp.status_code == 200 and len(resp.content) > 1000:
