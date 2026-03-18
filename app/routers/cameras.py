@@ -25,10 +25,19 @@ def create_camera(
         rtsp_url=cam_in.rtsp_url,
         is_active=cam_in.is_active,
         direction=cam_in.direction,
+        capture_mode=cam_in.capture_mode,
+        snapshot_url=cam_in.snapshot_url,
     )
     db.add(camera)
     db.commit()
     db.refresh(camera)
+
+    # Auto-start worker if camera is active
+    if camera.is_active:
+        mode = camera.capture_mode.value if camera.capture_mode else "snapshot"
+        rtsp_manager.start_camera(camera.id, camera.name, camera.rtsp_url,
+                                  camera.direction.value, mode, camera.snapshot_url)
+
     return camera
 
 
