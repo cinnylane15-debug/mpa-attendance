@@ -162,7 +162,7 @@ def get_live_detections(current_user: User = Depends(get_current_user)):
 def export_attendance(
     start_date: str = Query(...),
     end_date: str = Query(...),
-    class_id: int = Query(None),
+    class_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
