@@ -158,9 +158,11 @@ def get_live_detections(current_user: User = Depends(get_current_user)):
     return detections
 
 
-@router.post("/export")
+@router.get("/export")
 def export_attendance(
-    data: ExcelExportRequest,
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    class_id: int = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -169,12 +171,12 @@ def export_attendance(
         db.query(AttendanceRecord)
         .join(Student)
         .filter(
-            AttendanceRecord.date >= data.start_date,
-            AttendanceRecord.date <= data.end_date,
+            AttendanceRecord.date >= start_date,
+            AttendanceRecord.date <= end_date,
         )
     )
-    if data.class_id:
-        query = query.filter(Student.class_id == data.class_id)
+    if class_id:
+        query = query.filter(Student.class_id == class_id)
 
     records = query.order_by(AttendanceRecord.date, Student.student_id).all()
 

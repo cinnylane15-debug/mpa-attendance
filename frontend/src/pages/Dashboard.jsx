@@ -28,8 +28,8 @@ export default function Dashboard() {
       const [statsRes, weeklyRes, activityRes, classRes] = await Promise.all([
         apiGet('/dashboard/stats').catch(() => null),
         apiGet('/dashboard/weekly').catch(() => []),
-        apiGet('/attendance?limit=20').catch(() => []),
-        apiGet('/dashboard/classes').catch(() => []),
+        apiGet('/attendance/today').catch(() => []),
+        apiGet('/dashboard/class-stats').catch(() => []),
       ]);
       if (statsRes) setStats(statsRes);
       if (Array.isArray(weeklyRes)) setWeeklyData(weeklyRes);

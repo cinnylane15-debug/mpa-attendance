@@ -46,7 +46,8 @@ export default function Attendance() {
         params.append('date', selectedDate.format('YYYY-MM-DD'));
       }
       if (filterClass) params.append('class_id', filterClass);
-      const data = await apiGet(`/attendance?${params.toString()}`);
+      const endpoint = activeTab === 'today' ? '/attendance/today' : '/attendance/records';
+      const data = await apiGet(`${endpoint}?${params.toString()}`);
       setRecords(Array.isArray(data) ? data : data?.items || []);
     } catch (err) {
       message.error('Failed to load attendance records');
