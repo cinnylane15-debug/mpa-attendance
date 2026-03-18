@@ -30,6 +30,11 @@ class CameraDirection(str, enum.Enum):
     exit = "exit"
 
 
+class CaptureMode(str, enum.Enum):
+    snapshot = "snapshot"
+    rtsp = "rtsp"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -102,6 +107,8 @@ class Camera(Base):
     rtsp_url = Column(String(500), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     direction = Column(SAEnum(CameraDirection), default=CameraDirection.entry, nullable=False)
+    capture_mode = Column(SAEnum(CaptureMode), default=CaptureMode.snapshot, nullable=False, server_default="snapshot")
+    snapshot_url = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

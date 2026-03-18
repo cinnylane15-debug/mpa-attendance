@@ -3,8 +3,10 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone, date
+from urllib.parse import urlparse, parse_qs
 
 import cv2
+import httpx
 import numpy as np
 from sqlalchemy import text
 
@@ -14,6 +16,26 @@ from app.face_engine import face_engine
 from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student
 
 logger = logging.getLogger(__name__)
+
+
+def derive_snapshot_url(rtsp_url: str) -> str | None:
+    """Derive Dahua HTTP snapshot URL from an RTSP URL.
+
+    Example:
+        rtsp://admin:pass@192.168.1.9:554/cam/realmonitor?channel=3&subtype=0
+        -> http://admin:pass@192.168.1.9/cgi-bin/snapshot.cgi?channel=3
+    """
+    try:
+        parsed = urlparse(rtsp_url)
+        host = parsed.hostname
+        user = parsed.username or ""
+        password = parsed.password or ""
+        qs = parse_qs(parsed.query)
+        channel = qs.get("channel", ["1"])[0]
+        auth = f"{user}:{password}@" if user else ""
+        return f"http://{auth}{host}/cgi-bin/snapshot.cgi?channel={channel}"
+    except Exception:
+        return None
 
 
 class RecentDetection:
@@ -38,16 +60,18 @@ class RecentDetection:
 
 
 class CameraWorker:
-    """Background worker that processes RTSP stream from a single camera."""
+    """Background worker that processes a camera via RTSP stream or HTTP snapshots."""
 
-    def __init__(self, camera_id: int, camera_name: str, rtsp_url: str, direction: str):
+    def __init__(self, camera_id: int, camera_name: str, rtsp_url: str,
+                 direction: str, capture_mode: str = "snapshot", snapshot_url: str | None = None):
         self.camera_id = camera_id
         self.camera_name = camera_name
         self.rtsp_url = rtsp_url
         self.direction = direction
+        self.capture_mode = capture_mode
+        self.snapshot_url = snapshot_url or derive_snapshot_url(rtsp_url)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        # Cooldown: track last attendance time per student to prevent duplicates
         self._last_attendance: dict[int, datetime] = {}
 
     def start(self):
@@ -57,13 +81,13 @@ class CameraWorker:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{self.camera_name}")
         self._thread.start()
-        logger.info("Started RTSP worker for camera: %s", self.camera_name)
+        logger.info("Started %s worker for camera: %s", self.capture_mode, self.camera_name)
 
     def stop(self):
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)
-            logger.info("Stopped RTSP worker for camera: %s", self.camera_name)
+            logger.info("Stopped worker for camera: %s", self.camera_name)
 
     def _is_on_cooldown(self, student_db_id: int) -> bool:
         last = self._last_attendance.get(student_db_id)
@@ -73,6 +97,49 @@ class CameraWorker:
         return elapsed < settings.RTSP_COOLDOWN_MINUTES
 
     def _run(self):
+        if self.capture_mode == "snapshot":
+            self._run_snapshot()
+        else:
+            self._run_rtsp()
+
+    def _run_snapshot(self):
+        """Grab HTTP snapshots on an interval and process them."""
+        if not self.snapshot_url:
+            logger.error("No snapshot URL for camera %s, falling back to RTSP", self.camera_name)
+            self._run_rtsp()
+            return
+
+        # Parse auth from snapshot URL for digest auth
+        parsed = urlparse(self.snapshot_url)
+        username = parsed.username or ""
+        password = parsed.password or ""
+        # Build clean URL without auth in it (httpx handles auth separately)
+        clean_url = self.snapshot_url.replace(f"{username}:{password}@", "")
+
+        logger.info("Starting snapshot capture for camera %s: %s", self.camera_name, clean_url)
+
+        while not self._stop_event.is_set():
+            try:
+                with httpx.Client(timeout=10) as client:
+                    auth = httpx.DigestAuth(username, password)
+                    resp = client.get(clean_url, auth=auth)
+                    if resp.status_code == 200 and len(resp.content) > 1000:
+                        img_array = np.frombuffer(resp.content, dtype=np.uint8)
+                        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            self._process_frame(frame)
+                        else:
+                            logger.warning("Failed to decode snapshot from camera %s", self.camera_name)
+                    else:
+                        logger.warning("Bad snapshot response from %s: status=%d, size=%d",
+                                       self.camera_name, resp.status_code, len(resp.content))
+            except Exception as e:
+                logger.error("Snapshot error for camera %s: %s", self.camera_name, e)
+
+            self._stop_event.wait(settings.RTSP_FRAME_INTERVAL)
+
+    def _run_rtsp(self):
+        """Original RTSP stream processing."""
         while not self._stop_event.is_set():
             cap = None
             try:
@@ -151,7 +218,6 @@ class CameraWorker:
         today = date.today()
 
         if self.direction == "entry":
-            # Check-in: create a new attendance record if none exists today
             existing = (
                 db.query(AttendanceRecord)
                 .filter(
@@ -161,7 +227,6 @@ class CameraWorker:
                 .first()
             )
             if existing is None:
-                # Determine if late
                 school_start = datetime.strptime(settings.SCHOOL_START_TIME, "%H:%M").time()
                 late_threshold = (
                     datetime.combine(today, school_start) + timedelta(minutes=settings.LATE_THRESHOLD_MINUTES)
@@ -181,12 +246,11 @@ class CameraWorker:
                 db.add(record)
                 db.commit()
                 logger.info(
-                    "RTSP check-in: %s (%s) via %s [confidence=%.3f, status=%s]",
+                    "Check-in: %s (%s) via %s [confidence=%.3f, status=%s]",
                     student_name, student_code, self.camera_name, similarity, status.value,
                 )
 
         elif self.direction == "exit":
-            # Check-out: update the latest record for today
             existing = (
                 db.query(AttendanceRecord)
                 .filter(
@@ -200,13 +264,12 @@ class CameraWorker:
                 existing.check_out = now
                 db.commit()
                 logger.info(
-                    "RTSP check-out: %s (%s) via %s [confidence=%.3f]",
+                    "Check-out: %s (%s) via %s [confidence=%.3f]",
                     student_name, student_code, self.camera_name, similarity,
                 )
 
         self._last_attendance[student_db_id] = now
 
-        # Add to recent detections buffer
         detection = RecentDetection(
             student_name=student_name,
             student_id=student_code,
@@ -225,11 +288,12 @@ class RTSPManager:
         self._recent_detections: deque[RecentDetection] = deque(maxlen=200)
         self._lock = threading.Lock()
 
-    def start_camera(self, camera_id: int, camera_name: str, rtsp_url: str, direction: str):
+    def start_camera(self, camera_id: int, camera_name: str, rtsp_url: str,
+                     direction: str, capture_mode: str = "snapshot", snapshot_url: str | None = None):
         with self._lock:
             if camera_id in self._workers:
                 self._workers[camera_id].stop()
-            worker = CameraWorker(camera_id, camera_name, rtsp_url, direction)
+            worker = CameraWorker(camera_id, camera_name, rtsp_url, direction, capture_mode, snapshot_url)
             self._workers[camera_id] = worker
             worker.start()
 
@@ -267,7 +331,11 @@ class RTSPManager:
         try:
             cameras = db.query(Camera).filter(Camera.is_active == True).all()
             for cam in cameras:
-                self.start_camera(cam.id, cam.name, cam.rtsp_url, cam.direction.value)
+                self.start_camera(
+                    cam.id, cam.name, cam.rtsp_url, cam.direction.value,
+                    cam.capture_mode.value if cam.capture_mode else "snapshot",
+                    cam.snapshot_url,
+                )
             logger.info("Started %d active camera workers", len(cameras))
         finally:
             db.close()

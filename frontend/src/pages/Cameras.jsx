@@ -48,7 +48,7 @@ export default function Cameras() {
 
   const openAddModal = () => {
     form.resetFields();
-    form.setFieldsValue({ direction: 'entry', is_active: true });
+    form.setFieldsValue({ direction: 'entry', is_active: true, capture_mode: 'snapshot' });
     setModalOpen(true);
   };
 
@@ -144,6 +144,9 @@ export default function Cameras() {
                     <Tag color={camera.direction === 'entry' ? 'green' : 'orange'}>
                       {camera.direction === 'entry' ? 'Entry' : 'Exit'}
                     </Tag>
+                    <Tag color={camera.capture_mode === 'snapshot' ? 'blue' : 'purple'}>
+                      {camera.capture_mode === 'snapshot' ? 'HTTP Snapshot' : 'RTSP Stream'}
+                    </Tag>
                   </div>
                 </Space>
               </div>
@@ -222,6 +225,24 @@ export default function Cameras() {
               <Option value="entry">Entry</Option>
               <Option value="exit">Exit</Option>
             </Select>
+          </Form.Item>
+          <Form.Item
+            name="capture_mode"
+            label="Capture Mode"
+            rules={[{ required: true }]}
+            extra="Snapshot is recommended — grabs images via HTTP, more reliable than RTSP streaming"
+          >
+            <Select>
+              <Option value="snapshot">HTTP Snapshot (recommended)</Option>
+              <Option value="rtsp">RTSP Stream</Option>
+            </Select>
+          </Form.Item>
+          <Form.Item
+            name="snapshot_url"
+            label="Snapshot URL (optional)"
+            extra="Auto-derived from RTSP URL if left blank. Format: http://admin:pass@ip/cgi-bin/snapshot.cgi?channel=1"
+          >
+            <Input placeholder="Leave blank to auto-detect from RTSP URL" />
           </Form.Item>
           <Form.Item name="is_active" label="Active" valuePropName="value">
             <Select>

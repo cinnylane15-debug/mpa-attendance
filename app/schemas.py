@@ -138,6 +138,8 @@ class CameraCreate(BaseModel):
     rtsp_url: str
     is_active: bool = True
     direction: str = "entry"
+    capture_mode: str = "snapshot"
+    snapshot_url: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -146,6 +148,8 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     is_active: Optional[bool] = None
     direction: Optional[str] = None
+    capture_mode: Optional[str] = None
+    snapshot_url: Optional[str] = None
 
 
 class CameraResponse(BaseModel):
@@ -155,6 +159,8 @@ class CameraResponse(BaseModel):
     rtsp_url: str
     is_active: bool
     direction: str
+    capture_mode: str = "snapshot"
+    snapshot_url: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

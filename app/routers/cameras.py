@@ -46,6 +46,8 @@ def list_cameras(
             rtsp_url=cam.rtsp_url,
             is_active=cam.is_active,
             direction=cam.direction.value,
+            capture_mode=cam.capture_mode.value if cam.capture_mode else "snapshot",
+            snapshot_url=cam.snapshot_url,
             created_at=cam.created_at,
         )
         results.append(resp)
@@ -122,24 +124,46 @@ def test_camera_connection(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """Test RTSP connection for a camera."""
+    """Test camera connection (snapshot or RTSP)."""
     import cv2
+    import httpx
+    from app.rtsp_worker import derive_snapshot_url
 
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    try:
-        cap = cv2.VideoCapture(cam.rtsp_url)
-        if not cap.isOpened():
-            return {"success": False, "message": "Could not connect to RTSP stream"}
-        ret, _ = cap.read()
-        cap.release()
-        if ret:
-            return {"success": True, "message": "Connection successful, frame captured"}
-        return {"success": False, "message": "Connected but could not read a frame"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    mode = cam.capture_mode.value if cam.capture_mode else "snapshot"
+
+    if mode == "snapshot":
+        snapshot_url = cam.snapshot_url or derive_snapshot_url(cam.rtsp_url)
+        if not snapshot_url:
+            return {"success": False, "message": "Could not derive snapshot URL"}
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(snapshot_url)
+            username = parsed.username or ""
+            password = parsed.password or ""
+            clean_url = snapshot_url.replace(f"{username}:{password}@", "")
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(clean_url, auth=httpx.DigestAuth(username, password))
+                if resp.status_code == 200 and len(resp.content) > 1000:
+                    return {"success": True, "message": f"Snapshot OK ({len(resp.content)} bytes)"}
+                return {"success": False, "message": f"HTTP {resp.status_code}, {len(resp.content)} bytes"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    else:
+        try:
+            cap = cv2.VideoCapture(cam.rtsp_url)
+            if not cap.isOpened():
+                return {"success": False, "message": "Could not connect to RTSP stream"}
+            ret, _ = cap.read()
+            cap.release()
+            if ret:
+                return {"success": True, "message": "Connection successful, frame captured"}
+            return {"success": False, "message": "Connected but could not read a frame"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
 
 @router.post("/{camera_id}/start")
@@ -153,8 +177,9 @@ def start_camera(
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    rtsp_manager.start_camera(cam.id, cam.name, cam.rtsp_url, cam.direction.value)
-    return {"message": f"Camera '{cam.name}' worker started"}
+    mode = cam.capture_mode.value if cam.capture_mode else "snapshot"
+    rtsp_manager.start_camera(cam.id, cam.name, cam.rtsp_url, cam.direction.value, mode, cam.snapshot_url)
+    return {"message": f"Camera '{cam.name}' worker started ({mode} mode)"}
 
 
 @router.post("/{camera_id}/stop")
