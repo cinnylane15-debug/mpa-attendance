@@ -13,7 +13,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import SessionLocal
 from app.face_engine import face_engine
-from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student, UnknownFace
+from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student, StudentPhoto, UnknownFace
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class CameraWorker:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_attendance: dict[int, datetime] = {}
+        self._last_auto_learn: dict[int, datetime] = {}  # track auto-learn cooldown per student
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -331,6 +332,12 @@ class CameraWorker:
 
         self._last_attendance[student_db_id] = now
 
+        # Auto-learn: save high-confidence detections as new photos
+        if (settings.AUTO_LEARN_ENABLED
+                and similarity >= settings.AUTO_LEARN_MIN_CONFIDENCE
+                and frame is not None and bbox is not None):
+            self._auto_learn(db, student_db_id, student_code, frame, bbox, embedding, similarity)
+
         detection = RecentDetection(
             student_name=student_name,
             student_id=student_code,
@@ -339,6 +346,64 @@ class CameraWorker:
             timestamp=now,
         )
         rtsp_manager.add_detection(detection)
+
+
+    def _auto_learn(self, db, student_db_id: int, student_code: str,
+                     frame: np.ndarray, bbox: np.ndarray, embedding: np.ndarray, similarity: float):
+        """Automatically save high-confidence face detections as new student photos."""
+        try:
+            # Check cooldown — only auto-learn once per student per cooldown period
+            last = self._last_auto_learn.get(student_db_id)
+            if last is not None:
+                hours_elapsed = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+                if hours_elapsed < settings.AUTO_LEARN_COOLDOWN_HOURS:
+                    return
+
+            # Check if student already has max photos
+            photo_count = db.query(StudentPhoto).filter(
+                StudentPhoto.student_id == student_db_id
+            ).count()
+            if photo_count >= settings.AUTO_LEARN_MAX_PHOTOS:
+                return
+
+            # Crop face from frame with padding
+            import os
+            h, w = frame.shape[:2]
+            x1, y1, x2, y2 = [int(c) for c in bbox]
+            pad = int(max(x2 - x1, y2 - y1) * 0.3)
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+            x2 = min(w, x2 + pad)
+            y2 = min(h, y2 + pad)
+            face_crop = frame[y1:y2, x1:x2]
+
+            if face_crop.size == 0:
+                return
+
+            # Save cropped face
+            os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+            import uuid
+            filename = f"{student_code}_auto_{uuid.uuid4().hex[:8]}.jpg"
+            filepath = os.path.join(settings.UPLOAD_DIR, filename)
+            cv2.imwrite(filepath, face_crop)
+
+            # Add to student_photos
+            photo = StudentPhoto(
+                student_id=student_db_id,
+                photo_path=filepath,
+                face_embedding=embedding.tolist(),
+            )
+            db.add(photo)
+            db.commit()
+
+            self._last_auto_learn[student_db_id] = datetime.now(timezone.utc)
+            logger.info(
+                "Auto-learned face for %s [confidence=%.3f, total_photos=%d]",
+                student_code, similarity, photo_count + 1,
+            )
+        except Exception as e:
+            logger.error("Auto-learn error for student %s: %s", student_code, e)
+            db.rollback()
 
 
 class RTSPManager:

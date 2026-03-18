@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     RTSP_COOLDOWN_MINUTES: int = 30
     RTSP_RECONNECT_DELAY: float = 5.0
 
+    # Auto-learn: automatically save high-confidence detections as new photos
+    AUTO_LEARN_ENABLED: bool = True
+    AUTO_LEARN_MIN_CONFIDENCE: float = 0.55  # Only auto-learn above this threshold
+    AUTO_LEARN_MAX_PHOTOS: int = 20  # Max photos per student
+    AUTO_LEARN_COOLDOWN_HOURS: int = 24  # Only auto-learn once per student per day
+
     # School Settings
     SCHOOL_START_TIME: str = "08:00"
     LATE_THRESHOLD_MINUTES: int = 15
