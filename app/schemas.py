@@ -78,6 +78,14 @@ class StudentUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class StudentPhotoResponse(BaseModel):
+    id: int
+    photo_path: str
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 class StudentResponse(BaseModel):
     id: int
     student_id: str
@@ -88,6 +96,7 @@ class StudentResponse(BaseModel):
     guardian_phone: Optional[str] = None
     photo_path: Optional[str] = None
     has_face_embedding: bool = False
+    photo_count: int = 0
     is_active: bool = True
     created_at: Optional[datetime] = None
 

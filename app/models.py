@@ -79,6 +79,19 @@ class Student(Base):
 
     student_class = relationship("Class", back_populates="students")
     attendance_records = relationship("AttendanceRecord", back_populates="student", cascade="all, delete-orphan")
+    photos = relationship("StudentPhoto", back_populates="student", cascade="all, delete-orphan", order_by="StudentPhoto.created_at.desc()")
+
+
+class StudentPhoto(Base):
+    __tablename__ = "student_photos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    photo_path = Column(String(500), nullable=False)
+    face_embedding = Column(Vector(512), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    student = relationship("Student", back_populates="photos")
 
 
 class AttendanceRecord(Base):

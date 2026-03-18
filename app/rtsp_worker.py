@@ -229,16 +229,34 @@ class CameraWorker:
     def _match_and_record(self, db, embedding: np.ndarray, frame: np.ndarray = None, bbox=None):
         """Match embedding against enrolled students using pgvector nearest neighbor."""
         embedding_list = embedding.tolist()
+
+        # Search student_photos table first (multiple embeddings per student)
         result = db.execute(
             text(
-                "SELECT id, student_id, name, 1 - (face_embedding <=> CAST(:query AS vector)) AS similarity "
-                "FROM students "
-                "WHERE is_active = true AND face_embedding IS NOT NULL "
-                "ORDER BY face_embedding <=> CAST(:query AS vector) "
+                "SELECT s.id, s.student_id, s.name, "
+                "1 - (sp.face_embedding <=> CAST(:query AS vector)) AS similarity "
+                "FROM student_photos sp "
+                "JOIN students s ON s.id = sp.student_id "
+                "WHERE s.is_active = true "
+                "ORDER BY sp.face_embedding <=> CAST(:query AS vector) "
                 "LIMIT 1"
             ),
             {"query": str(embedding_list)},
         ).fetchone()
+
+        # Fallback to students table for legacy single-embedding students
+        if result is None:
+            result = db.execute(
+                text(
+                    "SELECT id, student_id, name, "
+                    "1 - (face_embedding <=> CAST(:query AS vector)) AS similarity "
+                    "FROM students "
+                    "WHERE is_active = true AND face_embedding IS NOT NULL "
+                    "ORDER BY face_embedding <=> CAST(:query AS vector) "
+                    "LIMIT 1"
+                ),
+                {"query": str(embedding_list)},
+            ).fetchone()
 
         if result is None:
             # No enrolled students with embeddings at all — save as unknown

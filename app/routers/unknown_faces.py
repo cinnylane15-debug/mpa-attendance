@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db
-from app.models import UnknownFace, Student, User
+from app.models import UnknownFace, Student, StudentPhoto, User
 from app.schemas import UnknownFaceResponse, AssignUnknownFace
 
 router = APIRouter(prefix="/api/unknown-faces", tags=["Unknown Faces"])
@@ -74,10 +74,18 @@ def assign_to_student(
     face.is_resolved = True
     face.resolved_at = datetime.now(timezone.utc)
 
-    # If student has no face embedding yet, use this one
-    if student.face_embedding is None and face.face_embedding is not None:
-        student.face_embedding = face.face_embedding
-        student.photo_path = face.face_image_path
+    # Add to student_photos for multi-photo matching
+    if face.face_embedding is not None:
+        sp = StudentPhoto(
+            student_id=student.id,
+            photo_path=face.face_image_path,
+            face_embedding=face.face_embedding,
+        )
+        db.add(sp)
+        # Update primary photo/embedding if student has none
+        if student.face_embedding is None:
+            student.face_embedding = face.face_embedding
+            student.photo_path = face.face_image_path
 
     db.commit()
     db.refresh(face)
