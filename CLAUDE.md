@@ -1,5 +1,147 @@
 # MPA Attendance Project
 
+## Overview
+
+School attendance management system using face recognition from Dahua IP cameras.
+Built with FastAPI (backend), React + Ant Design (frontend), PostgreSQL + pgvector, Redis, and InsightFace.
+
+## Project Structure
+
+```
+mpa-attendance/
+├── app/                    # FastAPI backend
+│   ├── main.py             # App entry point, router registration
+│   ├── config.py           # Settings (env vars, defaults)
+│   ├── database.py         # SQLAlchemy engine, session, migrations
+│   ├── models.py           # All SQLAlchemy models
+│   ├── schemas.py          # All Pydantic schemas
+│   ├── auth.py             # JWT auth, password hashing, dependencies
+│   ├── face_engine.py      # InsightFace wrapper (embedding extraction)
+│   ├── rtsp_worker.py      # Camera workers (snapshot + RTSP capture, face matching, attendance recording)
+│   └── routers/
+│       ├── auth_router.py  # Login, token refresh, user info
+│       ├── students.py     # CRUD + photo upload + face enrollment
+│       ├── classes.py      # CRUD
+│       ├── attendance.py   # Today/history records, manual check-in/out, Excel export, live detections
+│       ├── cameras.py      # CRUD + start/stop/test workers
+│       ├── schedules.py    # Class schedule CRUD
+│       ├── holidays.py     # Holiday CRUD
+│       ├── dashboard.py    # Stats, weekly summary, class stats
+│       └── unknown_faces.py # Unknown face library (assign/dismiss/delete)
+├── frontend/               # React (Vite) frontend
+│   ├── src/
+│   │   ├── App.jsx         # Routes
+│   │   ├── api.js          # API client (fetch wrapper with auth)
+│   │   ├── context/AuthContext.jsx
+│   │   ├── components/
+│   │   │   ├── AppLayout.jsx    # Sidebar + header layout
+│   │   │   └── ProtectedRoute.jsx
+│   │   └── pages/
+│   │       ├── Dashboard.jsx
+│   │       ├── Students.jsx
+│   │       ├── Classes.jsx
+│   │       ├── Attendance.jsx
+│   │       ├── Cameras.jsx
+│   │       ├── Schedules.jsx
+│   │       ├── Holidays.jsx
+│   │       ├── UnknownFaces.jsx
+│   │       └── Login.jsx
+│   └── package.json
+├── docker/
+│   ├── Dockerfile.backend   # Python 3.12 + pip install
+│   ├── Dockerfile.frontend  # Node build → nginx
+│   └── nginx.conf           # Frontend nginx (proxies /api/ and /uploads/ to backend)
+├── docker-compose.yml       # All services: db, redis, backend, frontend
+└── CLAUDE.md
+```
+
+## Architecture
+
+- **Frontend** (port 3000): React SPA served by nginx, proxies `/api/` and `/uploads/` to backend
+- **Backend** (port 8000): FastAPI with Uvicorn, serves API and uploaded files at `/uploads/`
+- **PostgreSQL 16** (port 5432): With pgvector extension for face embedding similarity search
+- **Redis 7** (port 6379): Available for caching (not heavily used yet)
+
+## MPA Attendance API Endpoints
+
+All endpoints prefixed with `/api/` except `/health`. All require JWT auth except `/health` and `/api/auth/login`.
+
+### Auth (`/api/auth`)
+- `POST /login` — `{"username", "password"}` → `{"access_token", "token_type"}`
+- `GET /me` — current user info
+
+### Students (`/api/students`)
+- `GET /` — list (query: `class_id`, `is_active`, `search`)
+- `POST /` — create `{"student_id", "name", "class_id?", ...}`
+- `GET /{id}` / `PUT /{id}` / `DELETE /{id}`
+- `POST /{id}/photo` — upload face photo (multipart), extracts face embedding
+
+### Classes (`/api/classes`)
+- `GET /` / `POST /` / `GET /{id}` / `PUT /{id}` / `DELETE /{id}`
+
+### Attendance (`/api/attendance`)
+- `GET /today` — today's records
+- `GET /records` — filtered (query: `date`, `class_id`, `student_id`)
+- `POST /check-in` — `{"student_id": "STU001"}` (manual)
+- `POST /check-out` — `{"student_id": "STU001"}` (manual)
+- `GET /live` — recent RTSP/snapshot detections (last 5 min)
+- `GET /export` — Excel download (query: `start_date`, `end_date`, `class_id?`)
+
+### Cameras (`/api/cameras`)
+- `GET /` / `POST /` / `GET /{id}` / `PUT /{id}` / `DELETE /{id}`
+- `POST /{id}/start` — start capture worker
+- `POST /{id}/stop` — stop capture worker
+- `POST /{id}/test` — test connection (snapshot or RTSP)
+- `GET /{id}/status` — check if worker is running
+- Camera fields: `name`, `location`, `rtsp_url`, `direction` (entry/exit), `capture_mode` (snapshot/rtsp), `snapshot_url?`
+
+### Schedules (`/api/schedules`)
+- `GET /` — list (query: `class_id`)
+- `POST /` / `GET /{id}` / `PUT /{id}` / `DELETE /{id}`
+
+### Holidays (`/api/holidays`)
+- `GET /` / `POST /` / `GET /{id}` / `PUT /{id}` / `DELETE /{id}`
+- `GET /upcoming` — next 5 holidays
+
+### Dashboard (`/api/dashboard`)
+- `GET /stats` — today's attendance stats
+- `GET /weekly` — 7-day summary
+- `GET /class-stats` — per-class breakdown
+
+### Unknown Faces (`/api/unknown-faces`)
+- `GET /` — list (query: `resolved`, `limit`)
+- `GET /stats` — `{"total", "unresolved"}`
+- `POST /{id}/assign` — `{"student_id"}` (assigns face to student, auto-enrolls embedding)
+- `POST /{id}/dismiss` — mark as resolved without assigning
+- `DELETE /{id}` — delete face and image
+
+## Camera Capture Modes
+
+- **snapshot** (default, recommended): Grabs JPEG via HTTP Digest auth from Dahua's `/cgi-bin/snapshot.cgi?channel=N`. Auto-derived from RTSP URL.
+- **rtsp**: Continuous video stream via OpenCV. More complex, prone to connection issues.
+
+Dahua RTSP URL format: `rtsp://admin:pass@IP:554/cam/realmonitor?channel=N&subtype=0`
+Derived snapshot URL: `http://admin:pass@IP/cgi-bin/snapshot.cgi?channel=N`
+
+## Face Recognition
+
+- **Engine**: InsightFace with `buffalo_sc` model (512-dim embeddings)
+- **Storage**: pgvector column on `students` table
+- **Matching**: Cosine similarity via pgvector `<=>` operator
+- **Threshold**: `FACE_RECOGNITION_TOLERANCE` (default 0.4)
+- **Unknown faces**: Faces below threshold saved to `unknown_faces` table with cropped image
+
+## Database Models
+
+- `User` — admin/teacher accounts
+- `Class` — school classes (has students, schedules)
+- `Student` — student info + face_embedding (Vector 512) + photo_path
+- `AttendanceRecord` — check-in/out records with status, method, confidence
+- `Camera` — IP camera config (RTSP URL, capture mode, direction)
+- `Schedule` — class timetable (day, start/end time)
+- `Holiday` — school holidays
+- `UnknownFace` — unidentified face captures from cameras
+
 ## Server Management API
 
 - **Base URL**: `https://mpa.osetec.net`
@@ -8,90 +150,11 @@
 
 ### Credentials
 
-- Username: `admin`
-- Password: `vdIwqkLoeMNhF4TP7Lwq`
+- Server management: Username `admin` / Password `vdIwqkLoeMNhF4TP7Lwq`
+- PostgreSQL: `mpa_admin` / `MpaSecure2026x` (database: `mpa_attendance`)
+- Redis: `MpaRedis2026x`
 
-### Authentication Flow
-
-1. **Login** — `POST /auth/login` with `{"username": "admin", "password": "vdIwqkLoeMNhF4TP7Lwq"}`
-2. Returns `access_token` and `refresh_token`
-3. Use `Authorization: Bearer <access_token>` on all subsequent requests
-4. **Refresh** — `POST /auth/token/refresh` with `{"refresh_token": "..."}`
-
-### API Endpoints
-
-All endpoints (except `/health` and `/auth/login`) require authentication.
-
-#### Health
-- `GET /health` — no auth needed
-
-#### Auth (`/auth`)
-- `POST /auth/login` — login, returns tokens
-- `POST /auth/token/refresh` — refresh access token
-- `GET /auth/me` — current user info
-- `POST /auth/api-keys` — create API key `{"name": "..."}`
-- `GET /auth/api-keys` — list API keys
-- `DELETE /auth/api-keys/{key_id}` — revoke key
-
-#### System (`/system`)
-- `GET /system/info` — CPU, RAM, disk, hostname, OS
-- `GET /system/uptime` — uptime and load averages
-- `GET /system/processes?limit=20` — top processes by CPU
-
-#### Packages (`/packages`)
-- `POST /packages/update` — apt-get update
-- `POST /packages/install` — `{"packages": ["pkg1", "pkg2"]}`
-- `POST /packages/remove` — `{"packages": ["pkg1"]}`
-- `GET /packages/installed?search=` — list installed packages
-
-#### Docker (`/docker`)
-- `GET /docker/status` — Docker installation/daemon status
-- `POST /docker/install` — install Docker
-- `GET /docker/containers?all=false` — list containers
-- `POST /docker/containers/{cid}/{action}` — start/stop/restart
-- `DELETE /docker/containers/{cid}?force=false` — remove container
-- `GET /docker/containers/{cid}/logs?tail=100` — container logs
-- `GET /docker/images` — list images
-- `POST /docker/images/pull` — `{"image": "nginx:latest"}`
-- `DELETE /docker/images/{iid}` — remove image
-
-#### Deploy (`/deploy`)
-- `POST /deploy/stack` — `{"name": "myapp", "compose_yaml": "...", "env_vars": {}}`
-- `DELETE /deploy/stack/{name}` — tear down and remove stack
-- `GET /deploy/stacks` — list all stacks
-- `POST /deploy/stack/{name}/up` — start stack
-- `POST /deploy/stack/{name}/down` — stop stack
-- `GET /deploy/stack/{name}/status` — stack container status
-- `POST /deploy/stack/{name}/env` — `{"env_vars": {"KEY": "VAL"}}`
-- `GET /deploy/stack/{name}/logs?tail=100` — stack logs
-
-#### Services (`/services`)
-- `GET /services?filter=` — list systemd services (filter: running, failed)
-- `GET /services/{name}` — service details
-- `POST /services/{name}/{action}` — start/stop/restart/enable/disable
-- `GET /services/{name}/logs?lines=100` — journalctl logs
-
-#### Files (`/files`)
-- `GET /files/list?path=/` — list directory
-- `GET /files/read?path=...` — read file content
-- `POST /files/write` — `{"path": "...", "content": "...", "mode": "0644"}`
-- `POST /files/upload?path=...` — multipart file upload
-- `GET /files/download?path=...` — download file
-- `DELETE /files/delete` — `{"path": "..."}`
-
-#### Commands (`/commands`)
-- `POST /commands/execute` — `{"command": "...", "timeout": 120, "cwd": null}`
-
-#### Network (`/network`)
-- `GET /network/interfaces` — list network interfaces
-- `GET /network/ports` — list listening ports
-- `GET /network/check-port?host=...&port=...` — check port reachability
-- `GET /network/firewall` — UFW status
-
-#### Audit (`/audit`)
-- `GET /audit/log?limit=50&action=` — view audit log
-
-#### Gateway (`/gw`) — GET-based endpoints for proxy-restricted environments
+### Gateway (`/gw`) — GET-based endpoints for proxy-restricted environments
 
 - `GET /gw/login?username=...&password=...` — login via GET, returns tokens
 - `GET /gw/exec?token=...&cmd=...&timeout=120` — execute command via GET
@@ -104,25 +167,38 @@ All endpoints (except `/health` and `/auth/login`) require authentication.
 - Write status to a file (e.g., `echo DONE > /path/status`) to check completion
 - WebFetch has a 15-minute cache — add `&_cb=N` to bust cache
 - Some commands with special characters get blocked by Cloudflare WAF — write to script files first
+- The `+` sign in URLs is interpreted as space — use `%2B` or avoid in content
 
 ### Server Details
 
-- Server IP: `72.255.61.75`
-- API runs on port `4433` locally with self-signed SSL
-- Exposed via Cloudflare Tunnel (tunnel ID: `54ea2776-579b-42f4-976e-50519a7715f0`)
-- Installed at `/opt/mpa-mgmt` on the server
-- Systemd service: `mpa-mgmt`
+- **Server IP**: `72.255.61.75`
+- **App URL**: `http://72.255.61.75:3000` (frontend)
+- **Management API**: runs on port `4433` locally, exposed via Cloudflare Tunnel
+- **App code**: `/opt/mpa-app` on the server
+- **GitHub repo**: `cinnylane15-debug/mpa-attendance` (public, server can `git pull`)
 
-### Installed Infrastructure
+## Deployment
 
-- **Docker** v29.3.0 + Docker Compose v5.1.0
-- **Nginx** v1.24.0 — reverse proxy on port 80 → app on port 8000
-- **PostgreSQL 16** — Docker container `mpa-postgres`, port 5432
-  - Database: `mpa_attendance`
-  - User: `mpa_admin` / Password: `MpaSecure2026x`
-- **Redis 7** — Docker container `mpa-redis`, port 6379
-  - Password: `MpaRedis2026x`
-- **Python venv** at `/opt/mpa-app/venv`
-  - FastAPI, Uvicorn, SQLAlchemy, Alembic
-  - face_recognition, dlib, OpenCV
-  - psycopg2-binary, redis, bcrypt, python-jose, httpx, Pillow
+```sh
+# On the server at /opt/mpa-app:
+git fetch origin claude/connect-to-api-gWbHB
+git checkout -f origin/claude/connect-to-api-gWbHB
+docker compose build --no-cache
+docker compose up -d
+```
+
+Or via the gateway API:
+1. Login: `GET /gw/login?username=admin&password=...`
+2. Write a deploy script to `/tmp/deploy.sh`
+3. Run: `GET /gw/exec?token=...&cmd=systemd-run sh /tmp/deploy.sh`
+4. Monitor: `GET /gw/exec?token=...&cmd=tail -5 /tmp/deploy.log`
+
+## Development Notes
+
+- Frontend API calls use relative `/api/` prefix — nginx proxies to backend
+- `normalizePath()` in `api.js` adds trailing slashes to prevent FastAPI 307 redirects
+- nginx uses `$http_host` (not `$host`) to preserve port in redirect headers
+- DB migrations for new columns handled in `database.py:_run_migrations()`
+- New tables auto-created by `Base.metadata.create_all()` on startup
+- Camera worker auto-derives snapshot URL from RTSP URL if not explicitly set
+- Unknown faces saved to `uploads/unknown_faces/` directory
