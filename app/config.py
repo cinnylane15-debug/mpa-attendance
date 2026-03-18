@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # Face Recognition
     FACE_RECOGNITION_TOLERANCE: float = 0.4
-    INSIGHTFACE_MODEL: str = "buffalo_sc"
+    INSIGHTFACE_MODEL: str = "buffalo_l"
 
     # File Uploads
     UPLOAD_DIR: str = "uploads/photos"

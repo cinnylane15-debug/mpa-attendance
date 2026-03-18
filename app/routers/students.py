@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin
 from app.config import settings
 from app.database import get_db
 from app.face_engine import face_engine
@@ -279,3 +279,57 @@ def delete_photo(
         student.face_embedding = None
 
     db.commit()
+
+
+@router.post("/re-enroll", status_code=200)
+def re_enroll_all(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Re-extract face embeddings for all student photos using the current model.
+
+    Use after switching InsightFace models to update all embeddings.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    photos = db.query(StudentPhoto).all()
+    updated = 0
+    failed = 0
+
+    for photo in photos:
+        if not os.path.exists(photo.photo_path):
+            log.warning("Photo file missing: %s", photo.photo_path)
+            failed += 1
+            continue
+        try:
+            embedding = face_engine.extract_embedding(photo.photo_path)
+            if embedding is not None:
+                photo.face_embedding = embedding.tolist()
+                updated += 1
+            else:
+                log.warning("No face detected in: %s", photo.photo_path)
+                failed += 1
+        except Exception as e:
+            log.error("Re-enroll error for %s: %s", photo.photo_path, e)
+            failed += 1
+
+    # Also update each student's primary embedding from their latest photo
+    students = db.query(Student).filter(Student.face_embedding.isnot(None)).all()
+    for student in students:
+        latest = db.query(StudentPhoto).filter(
+            StudentPhoto.student_id == student.id
+        ).order_by(StudentPhoto.created_at.desc()).first()
+        if latest:
+            student.face_embedding = latest.face_embedding
+        elif student.photo_path and os.path.exists(student.photo_path):
+            try:
+                embedding = face_engine.extract_embedding(student.photo_path)
+                if embedding is not None:
+                    student.face_embedding = embedding.tolist()
+                    updated += 1
+            except Exception:
+                failed += 1
+
+    db.commit()
+    return {"updated": updated, "failed": failed, "total": len(photos)}
