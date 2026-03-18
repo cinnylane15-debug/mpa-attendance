@@ -12,11 +12,11 @@ from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.models import (
-    AttendanceRecord, AttendanceStatus, AttendanceMethod, Student, Class,
+    AttendanceRecord, AttendanceStatus, AttendanceMethod, DetectionLog, Student, Class,
 )
 from app.rtsp_worker import rtsp_manager
 from app.schemas import (
-    AttendanceResponse, ManualCheckIn, ManualCheckOut, ExcelExportRequest,
+    AttendanceResponse, DetectionLogResponse, ManualCheckIn, ManualCheckOut, ExcelExportRequest,
 )
 from app.models import User
 
@@ -38,6 +38,9 @@ def _record_to_response(record: AttendanceRecord) -> AttendanceResponse:
         method=record.method.value,
         confidence=record.confidence,
         camera_name=record.camera_name,
+        check_in_photo=record.check_in_photo,
+        check_out_photo=record.check_out_photo,
+        check_out_confidence=record.check_out_confidence,
         created_at=record.created_at,
     )
 
@@ -223,3 +226,70 @@ def export_attendance(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.get("/detection-logs/{record_id}", response_model=list[DetectionLogResponse])
+def get_detection_logs(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get all detection logs for an attendance record."""
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    logs = (
+        db.query(DetectionLog)
+        .filter(DetectionLog.attendance_record_id == record_id)
+        .order_by(DetectionLog.detected_at.asc())
+        .all()
+    )
+    result = []
+    for log in logs:
+        student = log.student
+        result.append(DetectionLogResponse(
+            id=log.id,
+            attendance_record_id=log.attendance_record_id,
+            student_id=log.student_id,
+            student_name=student.name if student else None,
+            student_code=student.student_id if student else None,
+            photo_path=log.photo_path,
+            confidence=log.confidence,
+            camera_name=log.camera_name,
+            detected_at=log.detected_at,
+        ))
+    return result
+
+
+@router.get("/student-logs/{student_id}")
+def get_student_logs(
+    student_id: int,
+    record_date: Optional[date] = Query(None, alias="date"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get all detection logs for a student, optionally filtered by date."""
+    query = (
+        db.query(DetectionLog)
+        .filter(DetectionLog.student_id == student_id)
+    )
+    if record_date:
+        query = query.join(AttendanceRecord).filter(AttendanceRecord.date == record_date)
+
+    logs = query.order_by(DetectionLog.detected_at.desc()).limit(200).all()
+    result = []
+    for log in logs:
+        student = log.student
+        result.append(DetectionLogResponse(
+            id=log.id,
+            attendance_record_id=log.attendance_record_id,
+            student_id=log.student_id,
+            student_name=student.name if student else None,
+            student_code=student.student_id if student else None,
+            photo_path=log.photo_path,
+            confidence=log.confidence,
+            camera_name=log.camera_name,
+            detected_at=log.detected_at,
+        ))
+    return result

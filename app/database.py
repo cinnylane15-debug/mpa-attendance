@@ -30,6 +30,9 @@ def _run_migrations():
     migrations = [
         ("cameras", "capture_mode", "ALTER TABLE cameras ADD COLUMN capture_mode VARCHAR(8) NOT NULL DEFAULT 'snapshot'"),
         ("cameras", "snapshot_url", "ALTER TABLE cameras ADD COLUMN snapshot_url VARCHAR(500)"),
+        ("attendance_records", "check_in_photo", "ALTER TABLE attendance_records ADD COLUMN check_in_photo VARCHAR(500)"),
+        ("attendance_records", "check_out_photo", "ALTER TABLE attendance_records ADD COLUMN check_out_photo VARCHAR(500)"),
+        ("attendance_records", "check_out_confidence", "ALTER TABLE attendance_records ADD COLUMN check_out_confidence FLOAT"),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:

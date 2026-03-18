@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, require_admin
 from app.database import get_db
 from app.models import UnknownFace, Student, StudentPhoto, User
-from app.schemas import UnknownFaceResponse, AssignUnknownFace
+from app.schemas import UnknownFaceResponse, AssignUnknownFace, BulkAssignUnknownFaces, BulkDismissUnknownFaces
 
 router = APIRouter(prefix="/api/unknown-faces", tags=["Unknown Faces"])
 
@@ -129,3 +129,53 @@ def delete_unknown_face(
 
     db.delete(face)
     db.commit()
+
+
+@router.post("/bulk-assign")
+def bulk_assign(
+    data: BulkAssignUnknownFaces,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Bulk assign multiple unknown faces to a student."""
+    student = db.query(Student).filter(Student.id == data.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    faces = db.query(UnknownFace).filter(UnknownFace.id.in_(data.ids)).all()
+    assigned = 0
+    for face in faces:
+        face.assigned_student_id = data.student_id
+        face.is_resolved = True
+        face.resolved_at = datetime.now(timezone.utc)
+        if face.face_embedding is not None:
+            sp = StudentPhoto(
+                student_id=student.id,
+                photo_path=face.face_image_path,
+                face_embedding=face.face_embedding,
+            )
+            db.add(sp)
+            if student.face_embedding is None:
+                student.face_embedding = face.face_embedding
+                student.photo_path = face.face_image_path
+        assigned += 1
+
+    db.commit()
+    return {"assigned": assigned, "total": len(data.ids)}
+
+
+@router.post("/bulk-dismiss")
+def bulk_dismiss(
+    data: BulkDismissUnknownFaces,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Bulk dismiss multiple unknown faces."""
+    now = datetime.now(timezone.utc)
+    count = (
+        db.query(UnknownFace)
+        .filter(UnknownFace.id.in_(data.ids))
+        .update({"is_resolved": True, "resolved_at": now}, synchronize_session="fetch")
+    )
+    db.commit()
+    return {"dismissed": count, "total": len(data.ids)}

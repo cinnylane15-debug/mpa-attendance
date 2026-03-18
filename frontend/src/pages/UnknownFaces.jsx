@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Button, Select, Tag, message, Space, Typography, Image, Row, Col, Badge, Empty, Popconfirm, Modal,
+  Card, Button, Select, Tag, message, Space, Typography, Image, Row, Col, Badge, Empty, Popconfirm, Modal, Checkbox, Divider,
 } from 'antd';
 import {
   UserAddOutlined, CloseOutlined, DeleteOutlined, ReloadOutlined, QuestionCircleOutlined,
+  CheckSquareOutlined, MinusSquareOutlined,
 } from '@ant-design/icons';
 import { apiGet, apiPost, apiDelete } from '../api';
 
@@ -16,14 +17,19 @@ export default function UnknownFaces() {
   const [stats, setStats] = useState({ total: 0, unresolved: 0 });
   const [loading, setLoading] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
-  const [assignModal, setAssignModal] = useState(null); // face id
+  const [assignModal, setAssignModal] = useState(null); // face id or 'bulk'
   const [selectedStudent, setSelectedStudent] = useState(null);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkMode, setBulkMode] = useState(false);
 
   const fetchFaces = async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (!showResolved) params.append('resolved', 'false');
+      params.append('limit', '200');
       const data = await apiGet(`/unknown-faces?${params.toString()}`);
       setFaces(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -54,10 +60,17 @@ export default function UnknownFaces() {
   }, [showResolved]);
 
   const handleAssign = async () => {
-    if (!assignModal || !selectedStudent) return;
+    if (!selectedStudent) return;
     try {
-      await apiPost(`/unknown-faces/${assignModal}/assign`, { student_id: selectedStudent });
-      message.success('Face assigned to student');
+      if (assignModal === 'bulk') {
+        await apiPost('/unknown-faces/bulk-assign', { ids: selectedIds, student_id: selectedStudent });
+        message.success(`${selectedIds.length} faces assigned`);
+        setSelectedIds([]);
+        setBulkMode(false);
+      } else {
+        await apiPost(`/unknown-faces/${assignModal}/assign`, { student_id: selectedStudent });
+        message.success('Face assigned to student');
+      }
       setAssignModal(null);
       setSelectedStudent(null);
       fetchFaces();
@@ -78,6 +91,19 @@ export default function UnknownFaces() {
     }
   };
 
+  const handleBulkDismiss = async () => {
+    try {
+      await apiPost('/unknown-faces/bulk-dismiss', { ids: selectedIds });
+      message.success(`${selectedIds.length} faces dismissed`);
+      setSelectedIds([]);
+      setBulkMode(false);
+      fetchFaces();
+      fetchStats();
+    } catch (err) {
+      message.error(err.message || 'Failed to dismiss faces');
+    }
+  };
+
   const handleDelete = async (id) => {
     try {
       await apiDelete(`/unknown-faces/${id}`);
@@ -89,6 +115,19 @@ export default function UnknownFaces() {
     }
   };
 
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const selectAll = () => {
+    const unresolvedIds = faces.filter((f) => !f.is_resolved).map((f) => f.id);
+    setSelectedIds(unresolvedIds);
+  };
+
+  const deselectAll = () => setSelectedIds([]);
+
   return (
     <div>
       <div className="page-header">
@@ -97,6 +136,14 @@ export default function UnknownFaces() {
           <Badge count={stats.unresolved} showZero style={{ backgroundColor: stats.unresolved > 0 ? '#f5222d' : '#d9d9d9' }} />
         </Space>
         <Space>
+          <Button
+            size="small"
+            type={bulkMode ? 'primary' : 'default'}
+            icon={<CheckSquareOutlined />}
+            onClick={() => { setBulkMode(!bulkMode); setSelectedIds([]); }}
+          >
+            {bulkMode ? 'Cancel Select' : 'Bulk Select'}
+          </Button>
           <Button
             size="small"
             onClick={() => setShowResolved(!showResolved)}
@@ -108,6 +155,40 @@ export default function UnknownFaces() {
           </Button>
         </Space>
       </div>
+
+      {/* Bulk action bar */}
+      {bulkMode && (
+        <Card size="small" style={{ marginBottom: 12, background: '#f0f5ff', border: '1px solid #adc6ff' }}>
+          <Space wrap>
+            <Text strong>{selectedIds.length} selected</Text>
+            <Button size="small" onClick={selectAll} icon={<CheckSquareOutlined />}>Select All</Button>
+            <Button size="small" onClick={deselectAll} icon={<MinusSquareOutlined />}>Deselect All</Button>
+            <Divider type="vertical" />
+            <Button
+              size="small"
+              type="primary"
+              icon={<UserAddOutlined />}
+              disabled={selectedIds.length === 0}
+              onClick={() => { setAssignModal('bulk'); setSelectedStudent(null); }}
+            >
+              Assign Selected ({selectedIds.length})
+            </Button>
+            <Popconfirm
+              title={`Dismiss ${selectedIds.length} faces?`}
+              onConfirm={handleBulkDismiss}
+              disabled={selectedIds.length === 0}
+            >
+              <Button
+                size="small"
+                icon={<CloseOutlined />}
+                disabled={selectedIds.length === 0}
+              >
+                Dismiss Selected ({selectedIds.length})
+              </Button>
+            </Popconfirm>
+          </Space>
+        </Card>
+      )}
 
       {faces.length === 0 && !loading ? (
         <Card>
@@ -122,15 +203,27 @@ export default function UnknownFaces() {
             <Col xs={12} sm={8} md={6} lg={4} key={face.id}>
               <Card
                 size="small"
+                style={selectedIds.includes(face.id) ? { border: '2px solid #1890ff', background: '#e6f7ff' } : {}}
                 cover={
-                  <Image
-                    src={`/uploads/unknown_faces/${face.face_image_path}`}
-                    alt="Unknown face"
-                    style={{ objectFit: 'cover', height: 160 }}
-                    fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAI8wNPvd7POQAAAABJRU5ErkJggg=="
-                  />
+                  <div style={{ position: 'relative' }}>
+                    {bulkMode && !face.is_resolved && (
+                      <Checkbox
+                        checked={selectedIds.includes(face.id)}
+                        onChange={() => toggleSelect(face.id)}
+                        style={{ position: 'absolute', top: 8, left: 8, zIndex: 10 }}
+                      />
+                    )}
+                    <Image
+                      src={`/uploads/unknown_faces/${face.face_image_path}`}
+                      alt="Unknown face"
+                      style={{ objectFit: 'cover', height: 160 }}
+                      preview={!bulkMode}
+                      onClick={bulkMode && !face.is_resolved ? () => toggleSelect(face.id) : undefined}
+                      fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAI8wNPvd7POQAAAABJRU5ErkJggg=="
+                    />
+                  </div>
                 }
-                actions={[
+                actions={bulkMode ? undefined : [
                   <Button
                     type="link"
                     size="small"
@@ -162,7 +255,7 @@ export default function UnknownFaces() {
                   {face.best_match_name && (
                     <div>
                       <Text type="secondary">Best: </Text>
-                      <Text>{face.best_match_name}</Text>
+                      <Text strong>{face.best_match_name}</Text>
                     </div>
                   )}
                   <div>
@@ -181,7 +274,7 @@ export default function UnknownFaces() {
       )}
 
       <Modal
-        title="Assign Face to Student"
+        title={assignModal === 'bulk' ? `Assign ${selectedIds.length} Faces to Student` : 'Assign Face to Student'}
         open={!!assignModal}
         onOk={handleAssign}
         onCancel={() => { setAssignModal(null); setSelectedStudent(null); }}

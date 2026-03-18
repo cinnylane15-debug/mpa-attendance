@@ -13,7 +13,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import SessionLocal
 from app.face_engine import face_engine
-from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, Student, StudentPhoto, UnknownFace
+from app.models import AttendanceRecord, AttendanceStatus, AttendanceMethod, Camera, DetectionLog, Student, StudentPhoto, UnknownFace
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +227,39 @@ class CameraWorker:
         logger.info("Saved unknown face from camera %s (confidence=%.3f)",
                      self.camera_name, confidence or 0)
 
+    def _save_detection_photo(self, frame: np.ndarray, bbox, student_code: str, suffix: str) -> str:
+        """Save a snapshot of the detected face (wider crop) to disk. Returns the file path."""
+        import os
+        import uuid
+
+        detection_dir = os.path.join(settings.UPLOAD_DIR, "detections")
+        os.makedirs(detection_dir, exist_ok=True)
+
+        # Save a generous crop around the face for context
+        x1, y1, x2, y2 = [int(c) for c in bbox[:4]]
+        h, w = frame.shape[:2]
+        face_w, face_h = x2 - x1, y2 - y1
+        pad = int(max(face_w, face_h) * 0.8)
+        x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+        x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
+        crop = frame[y1:y2, x1:x2]
+
+        if crop.size == 0:
+            crop = frame  # fallback to full frame
+
+        filename = f"{student_code}_{suffix}_{uuid.uuid4().hex[:8]}.jpg"
+        filepath = os.path.join(detection_dir, filename)
+        cv2.imwrite(filepath, crop)
+        return filepath
+
     def _match_and_record(self, db, embedding: np.ndarray, frame: np.ndarray = None, bbox=None):
-        """Match embedding against enrolled students using pgvector nearest neighbor."""
+        """Match embedding against enrolled students using pgvector nearest neighbor.
+
+        Logic:
+        - First detection after DAY_START_HOUR (5 AM) = check-in with photo
+        - Every subsequent detection updates check-out time + photo (last one wins)
+        - Every detection creates a DetectionLog entry with photo
+        """
         embedding_list = embedding.tolist()
 
         # Search student_photos table first (multiple embeddings per student)
@@ -260,7 +291,6 @@ class CameraWorker:
             ).fetchone()
 
         if result is None:
-            # No enrolled students with embeddings at all — save as unknown
             if frame is not None and bbox is not None:
                 self._save_unknown_face(db, frame, bbox, embedding)
             return
@@ -268,7 +298,6 @@ class CameraWorker:
         student_db_id, student_code, student_name, similarity = result
 
         if similarity < settings.FACE_RECOGNITION_TOLERANCE:
-            # Below threshold — save as unknown with best match info
             if frame is not None and bbox is not None:
                 self._save_unknown_face(db, frame, bbox, embedding, similarity, student_db_id)
             return
@@ -279,56 +308,83 @@ class CameraWorker:
         now = datetime.now(timezone.utc)
         today = date.today()
 
-        if self.direction == "entry":
-            existing = (
-                db.query(AttendanceRecord)
-                .filter(
-                    AttendanceRecord.student_id == student_db_id,
-                    AttendanceRecord.date == today,
-                )
-                .first()
+        # Find existing attendance record for today
+        existing = (
+            db.query(AttendanceRecord)
+            .filter(
+                AttendanceRecord.student_id == student_db_id,
+                AttendanceRecord.date == today,
             )
-            if existing is None:
-                school_start = datetime.strptime(settings.SCHOOL_START_TIME, "%H:%M").time()
-                late_threshold = (
-                    datetime.combine(today, school_start) + timedelta(minutes=settings.LATE_THRESHOLD_MINUTES)
-                ).time()
-                current_time = now.time()
-                status = AttendanceStatus.late if current_time > late_threshold else AttendanceStatus.present
+            .first()
+        )
 
-                record = AttendanceRecord(
+        # Save detection photo
+        photo_path = None
+        if frame is not None and bbox is not None:
+            photo_path = self._save_detection_photo(frame, bbox, student_code, now.strftime("%H%M%S"))
+
+        if existing is None:
+            # FIRST detection today = CHECK-IN
+            school_start = datetime.strptime(settings.SCHOOL_START_TIME, "%H:%M").time()
+            late_threshold = (
+                datetime.combine(today, school_start) + timedelta(minutes=settings.LATE_THRESHOLD_MINUTES)
+            ).time()
+            current_time = now.time()
+            status = AttendanceStatus.late if current_time > late_threshold else AttendanceStatus.present
+
+            record = AttendanceRecord(
+                student_id=student_db_id,
+                check_in=now,
+                date=today,
+                status=status,
+                method=AttendanceMethod.rtsp_auto,
+                confidence=round(similarity, 4),
+                camera_name=self.camera_name,
+                check_in_photo=photo_path,
+            )
+            db.add(record)
+            db.flush()  # get the record.id
+
+            # Save detection log
+            if photo_path:
+                log = DetectionLog(
+                    attendance_record_id=record.id,
                     student_id=student_db_id,
-                    check_in=now,
-                    date=today,
-                    status=status,
-                    method=AttendanceMethod.rtsp_auto,
+                    photo_path=photo_path,
                     confidence=round(similarity, 4),
                     camera_name=self.camera_name,
+                    detected_at=now,
                 )
-                db.add(record)
-                db.commit()
-                logger.info(
-                    "Check-in: %s (%s) via %s [confidence=%.3f, status=%s]",
-                    student_name, student_code, self.camera_name, similarity, status.value,
-                )
+                db.add(log)
 
-        elif self.direction == "exit":
-            existing = (
-                db.query(AttendanceRecord)
-                .filter(
-                    AttendanceRecord.student_id == student_db_id,
-                    AttendanceRecord.date == today,
-                )
-                .order_by(AttendanceRecord.created_at.desc())
-                .first()
+            db.commit()
+            logger.info(
+                "Check-in: %s (%s) via %s [confidence=%.3f, status=%s]",
+                student_name, student_code, self.camera_name, similarity, status.value,
             )
-            if existing and existing.check_out is None:
-                existing.check_out = now
-                db.commit()
-                logger.info(
-                    "Check-out: %s (%s) via %s [confidence=%.3f]",
-                    student_name, student_code, self.camera_name, similarity,
+        else:
+            # SUBSEQUENT detection = update CHECK-OUT (last one wins)
+            existing.check_out = now
+            existing.check_out_photo = photo_path
+            existing.check_out_confidence = round(similarity, 4)
+
+            # Save detection log
+            if photo_path:
+                log = DetectionLog(
+                    attendance_record_id=existing.id,
+                    student_id=student_db_id,
+                    photo_path=photo_path,
+                    confidence=round(similarity, 4),
+                    camera_name=self.camera_name,
+                    detected_at=now,
                 )
+                db.add(log)
+
+            db.commit()
+            logger.info(
+                "Check-out updated: %s (%s) via %s [confidence=%.3f]",
+                student_name, student_code, self.camera_name, similarity,
+            )
 
         self._last_attendance[student_db_id] = now
 

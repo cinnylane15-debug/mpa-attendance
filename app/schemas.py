@@ -126,7 +126,24 @@ class AttendanceResponse(BaseModel):
     method: str
     confidence: Optional[float] = None
     camera_name: Optional[str] = None
+    check_in_photo: Optional[str] = None
+    check_out_photo: Optional[str] = None
+    check_out_confidence: Optional[float] = None
     created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class DetectionLogResponse(BaseModel):
+    id: int
+    attendance_record_id: int
+    student_id: int
+    student_name: Optional[str] = None
+    student_code: Optional[str] = None
+    photo_path: str
+    confidence: Optional[float] = None
+    camera_name: Optional[str] = None
+    detected_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -274,6 +291,15 @@ class UnknownFaceResponse(BaseModel):
 
 class AssignUnknownFace(BaseModel):
     student_id: int
+
+
+class BulkAssignUnknownFaces(BaseModel):
+    ids: list[int]
+    student_id: int
+
+
+class BulkDismissUnknownFaces(BaseModel):
+    ids: list[int]
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

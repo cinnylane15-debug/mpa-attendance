@@ -106,9 +106,28 @@ class AttendanceRecord(Base):
     method = Column(SAEnum(AttendanceMethod), default=AttendanceMethod.manual, nullable=False)
     confidence = Column(Float, nullable=True)
     camera_name = Column(String(200), nullable=True)
+    check_in_photo = Column(String(500), nullable=True)
+    check_out_photo = Column(String(500), nullable=True)
+    check_out_confidence = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     student = relationship("Student", back_populates="attendance_records")
+    detection_logs = relationship("DetectionLog", back_populates="attendance_record", cascade="all, delete-orphan", order_by="DetectionLog.detected_at")
+
+
+class DetectionLog(Base):
+    __tablename__ = "detection_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attendance_record_id = Column(Integer, ForeignKey("attendance_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    photo_path = Column(String(500), nullable=False)
+    confidence = Column(Float, nullable=True)
+    camera_name = Column(String(200), nullable=True)
+    detected_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    attendance_record = relationship("AttendanceRecord", back_populates="detection_logs")
+    student = relationship("Student")
 
 
 class Camera(Base):

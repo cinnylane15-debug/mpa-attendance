@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     AUTO_LEARN_COOLDOWN_HOURS: int = 24  # Only auto-learn once per student per day
 
     # School Settings
-    SCHOOL_START_TIME: str = "08:00"
+    SCHOOL_START_TIME: str = "05:00"
     LATE_THRESHOLD_MINUTES: int = 15
+    DAY_START_HOUR: int = 5  # Day starts at 5 AM — first detection after this = check-in
 
     # CORS
     CORS_ORIGINS: list[str] = ["*"]
