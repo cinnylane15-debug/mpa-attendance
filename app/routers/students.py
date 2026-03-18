@@ -16,11 +16,27 @@ from app.schemas import StudentCreate, StudentResponse, StudentUpdate, StudentPh
 router = APIRouter(prefix="/api/students", tags=["Students"])
 
 
+def _relative_upload_path(full_path: str) -> str:
+    """Convert a full server path to a path relative to the uploads root.
+
+    e.g. /app/uploads/unknown_faces/foo.jpg -> unknown_faces/foo.jpg
+         uploads/photos/bar.jpg -> photos/bar.jpg
+         /app/uploads/photos/baz.jpg -> photos/baz.jpg
+    """
+    if not full_path:
+        return full_path
+    # Find 'uploads/' in the path and return everything after it
+    idx = full_path.find("uploads/")
+    if idx >= 0:
+        return full_path[idx + len("uploads/"):]
+    return os.path.basename(full_path)
+
+
 def _student_to_response(student: Student) -> StudentResponse:
-    # Return just the filename, not the full server path
+    # Return relative path from uploads root
     photo = student.photo_path
     if photo:
-        photo = os.path.basename(photo)
+        photo = _relative_upload_path(photo)
     return StudentResponse(
         id=student.id,
         student_id=student.student_id,
@@ -217,7 +233,7 @@ def list_photos(
     return [
         StudentPhotoResponse(
             id=p.id,
-            photo_path=os.path.basename(p.photo_path),
+            photo_path=_relative_upload_path(p.photo_path),
             created_at=p.created_at,
         )
         for p in student.photos
