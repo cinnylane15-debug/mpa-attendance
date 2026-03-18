@@ -258,6 +258,13 @@ export default function UnknownFaces() {
                       <Text strong>{face.best_match_name}</Text>
                     </div>
                   )}
+                  {face.sighting_count > 1 && (
+                    <div>
+                      <Tag color="blue" style={{ fontSize: 11 }}>
+                        Seen {face.sighting_count}x
+                      </Tag>
+                    </div>
+                  )}
                   <div>
                     <Text type="secondary">{face.camera_name || 'Unknown camera'}</Text>
                   </div>

@@ -33,6 +33,8 @@ def _run_migrations():
         ("attendance_records", "check_in_photo", "ALTER TABLE attendance_records ADD COLUMN check_in_photo VARCHAR(500)"),
         ("attendance_records", "check_out_photo", "ALTER TABLE attendance_records ADD COLUMN check_out_photo VARCHAR(500)"),
         ("attendance_records", "check_out_confidence", "ALTER TABLE attendance_records ADD COLUMN check_out_confidence FLOAT"),
+        ("unknown_faces", "sighting_count", "ALTER TABLE unknown_faces ADD COLUMN sighting_count INTEGER NOT NULL DEFAULT 1"),
+        ("unknown_faces", "last_seen_at", "ALTER TABLE unknown_faces ADD COLUMN last_seen_at TIMESTAMPTZ DEFAULT NOW()"),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:

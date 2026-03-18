@@ -1,6 +1,8 @@
 import logging
+import os
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone, date
 from urllib.parse import urlparse, parse_qs
@@ -74,6 +76,7 @@ class CameraWorker:
         self._thread: threading.Thread | None = None
         self._last_attendance: dict[int, datetime] = {}
         self._last_auto_learn: dict[int, datetime] = {}  # track auto-learn cooldown per student
+        self._last_unknown: dict[int, datetime] = {}  # track cooldown per unknown face cluster (by unknown_faces.id)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -192,24 +195,72 @@ class CameraWorker:
 
     def _save_unknown_face(self, db, frame: np.ndarray, bbox, embedding: np.ndarray,
                           confidence: float = None, best_match_id: int = None):
-        """Save an unidentified face crop to disk and database."""
-        import os
-        import uuid
-
-        unknown_dir = os.path.join(settings.UPLOAD_DIR, "unknown_faces")
-        os.makedirs(unknown_dir, exist_ok=True)
-
-        # Crop face from frame
+        """Save an unidentified face crop to disk and database, with dedup and space management."""
         x1, y1, x2, y2 = [int(c) for c in bbox[:4]]
+        face_w, face_h = x2 - x1, y2 - y1
+
+        # Skip tiny faces — too small to be useful
+        if face_w < settings.UNKNOWN_FACE_MIN_SIZE or face_h < settings.UNKNOWN_FACE_MIN_SIZE:
+            return
+
+        # --- Dedup: check if a similar unknown face already exists ---
+        embedding_list = embedding.tolist()
+        existing = db.execute(
+            text(
+                "SELECT id, "
+                "1 - (face_embedding <=> CAST(:query AS vector)) AS similarity "
+                "FROM unknown_faces "
+                "WHERE is_resolved = false AND face_embedding IS NOT NULL "
+                "ORDER BY face_embedding <=> CAST(:query AS vector) "
+                "LIMIT 1"
+            ),
+            {"query": str(embedding_list)},
+        ).fetchone()
+
+        now = datetime.now(timezone.utc)
+
+        if existing and existing.similarity >= settings.UNKNOWN_FACE_DEDUP_THRESHOLD:
+            # Same unknown person seen again — just bump the counter
+            unknown_id = existing.id
+
+            # Check in-memory cooldown to avoid hammering the DB
+            last = self._last_unknown.get(unknown_id)
+            if last and (now - last).total_seconds() / 60 < settings.UNKNOWN_FACE_COOLDOWN_MINUTES:
+                return
+
+            db.execute(
+                text(
+                    "UPDATE unknown_faces SET sighting_count = sighting_count + 1, "
+                    "last_seen_at = :now WHERE id = :id"
+                ),
+                {"now": now, "id": unknown_id},
+            )
+            db.commit()
+            self._last_unknown[unknown_id] = now
+            logger.debug("Unknown face id=%d seen again (count+1) on camera %s",
+                         unknown_id, self.camera_name)
+            return
+
+        # --- Auto-purge: enforce max cap by deleting oldest ---
+        unresolved_count = db.execute(
+            text("SELECT COUNT(*) FROM unknown_faces WHERE is_resolved = false")
+        ).scalar()
+
+        if unresolved_count >= settings.UNKNOWN_FACE_MAX_UNRESOLVED:
+            self._purge_old_unknowns(db)
+
+        # --- Save new unknown face ---
         h, w = frame.shape[:2]
-        # Add padding
         pad = 30
-        x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
-        x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
-        face_crop = frame[y1:y2, x1:x2]
+        cx1, cy1 = max(0, x1 - pad), max(0, y1 - pad)
+        cx2, cy2 = min(w, x2 + pad), min(h, y2 + pad)
+        face_crop = frame[cy1:cy2, cx1:cx2]
 
         if face_crop.size == 0:
             return
+
+        unknown_dir = os.path.join(settings.UPLOAD_DIR, "unknown_faces")
+        os.makedirs(unknown_dir, exist_ok=True)
 
         filename = f"unknown_{uuid.uuid4().hex[:12]}.jpg"
         filepath = os.path.join(unknown_dir, filename)
@@ -217,21 +268,51 @@ class CameraWorker:
 
         unknown = UnknownFace(
             face_image_path=filepath,
-            face_embedding=embedding.tolist(),
+            face_embedding=embedding_list,
             confidence=round(confidence, 4) if confidence else None,
             best_match_student_id=best_match_id,
             camera_name=self.camera_name,
+            sighting_count=1,
+            last_seen_at=now,
         )
         db.add(unknown)
         db.commit()
-        logger.info("Saved unknown face from camera %s (confidence=%.3f)",
+        self._last_unknown[unknown.id] = now
+        logger.info("Saved new unknown face from camera %s (confidence=%.3f)",
                      self.camera_name, confidence or 0)
+
+    def _purge_old_unknowns(self, db):
+        """Delete old unresolved unknown faces to free space."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.UNKNOWN_FACE_AUTO_PURGE_DAYS)
+
+        # Delete faces older than purge threshold first
+        old_faces = db.query(UnknownFace).filter(
+            UnknownFace.is_resolved == False,
+            UnknownFace.captured_at < cutoff,
+        ).all()
+
+        if not old_faces:
+            # If nothing old enough, delete the oldest 10% by sighting_count (least seen)
+            total = db.query(UnknownFace).filter(UnknownFace.is_resolved == False).count()
+            delete_count = max(10, total // 10)
+            old_faces = db.query(UnknownFace).filter(
+                UnknownFace.is_resolved == False,
+            ).order_by(UnknownFace.sighting_count.asc(), UnknownFace.captured_at.asc()
+            ).limit(delete_count).all()
+
+        for face in old_faces:
+            if face.face_image_path and os.path.exists(face.face_image_path):
+                try:
+                    os.remove(face.face_image_path)
+                except OSError:
+                    pass
+            db.delete(face)
+
+        db.commit()
+        logger.info("Purged %d old unknown faces", len(old_faces))
 
     def _save_detection_photo(self, frame: np.ndarray, bbox, student_code: str, suffix: str) -> str:
         """Save a snapshot of the detected face (wider crop) to disk. Returns the file path."""
-        import os
-        import uuid
-
         detection_dir = os.path.join(settings.UPLOAD_DIR, "detections")
         os.makedirs(detection_dir, exist_ok=True)
 
@@ -423,7 +504,6 @@ class CameraWorker:
                 return
 
             # Crop face from frame with padding
-            import os
             h, w = frame.shape[:2]
             x1, y1, x2, y2 = [int(c) for c in bbox]
             pad = int(max(x2 - x1, y2 - y1) * 0.3)
@@ -438,7 +518,6 @@ class CameraWorker:
 
             # Save cropped face
             os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-            import uuid
             filename = f"{student_code}_auto_{uuid.uuid4().hex[:8]}.jpg"
             filepath = os.path.join(settings.UPLOAD_DIR, filename)
             cv2.imwrite(filepath, face_crop)

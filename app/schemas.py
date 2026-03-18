@@ -284,6 +284,8 @@ class UnknownFaceResponse(BaseModel):
     assigned_student_id: Optional[int] = None
     assigned_student_name: Optional[str] = None
     is_resolved: bool = False
+    sighting_count: int = 1
+    last_seen_at: Optional[datetime] = None
     captured_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

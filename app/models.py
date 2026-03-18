@@ -168,6 +168,8 @@ class UnknownFace(Base):
     camera_name = Column(String(200), nullable=True)
     assigned_student_id = Column(Integer, ForeignKey("students.id"), nullable=True)  # manually assigned
     is_resolved = Column(Boolean, default=False, nullable=False)
+    sighting_count = Column(Integer, default=1, nullable=False)  # how many times this face was seen
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())  # last time this face appeared
     captured_at = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 

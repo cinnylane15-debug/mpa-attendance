@@ -24,6 +24,8 @@ def _face_to_response(face: UnknownFace) -> UnknownFaceResponse:
         assigned_student_id=face.assigned_student_id,
         assigned_student_name=face.assigned_student.name if face.assigned_student else None,
         is_resolved=face.is_resolved,
+        sighting_count=getattr(face, 'sighting_count', 1) or 1,
+        last_seen_at=getattr(face, 'last_seen_at', None),
         captured_at=face.captured_at,
     )
 
